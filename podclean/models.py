@@ -14,6 +14,23 @@ class Word:
     end: float  # seconds
     probability: float = 1.0
 
+    def to_dict(self) -> dict:
+        return {
+            "text": self.text,
+            "start": self.start,
+            "end": self.end,
+            "probability": self.probability,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Word:
+        return cls(
+            text=data["text"],
+            start=float(data["start"]),
+            end=float(data["end"]),
+            probability=float(data.get("probability", 1.0)),
+        )
+
     def __repr__(self) -> str:
         return f"Word({self.text!r}, {self.start:.2f}s–{self.end:.2f}s)"
 
@@ -26,6 +43,23 @@ class TranscriptSegment:
     end: float  # seconds
     text: str
     words: list[Word] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "text": self.text,
+            "words": [w.to_dict() for w in self.words],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TranscriptSegment:
+        return cls(
+            start=float(data["start"]),
+            end=float(data["end"]),
+            text=data["text"],
+            words=[Word.from_dict(w) for w in data.get("words", [])],
+        )
 
     @property
     def duration(self) -> float:

@@ -90,68 +90,107 @@ def _run_pipeline(
     config: Config,
 ) -> None:
     """Run the full ad detection and removal pipeline."""
+    import json
     from podclean.transcriber import Transcriber
     from podclean.detector import AdDetector
     from podclean.processor import AudioProcessor
+    from podclean.models import TranscriptSegment
 
-    # --- Step 1: Transcribe ---
-    console.print()
-    console.print("[bold cyan]Step 1/3:[/] Transcribing audio...", highlight=False)
-    console.print(f"  Model: [yellow]{config.whisper_model}[/]  File: [dim]{audio_path.name}[/]")
-    console.print()
+    cache_path = audio_path.with_suffix(".json")
 
-    t0 = time.time()
-    transcriber = Transcriber(model_size=model)
-    segments = transcriber.transcribe(audio_path)
-    t_transcribe = time.time() - t0
-
-    total_words = sum(len(s.words) for s in segments)
-    console.print(
-        f"  ✓ Transcribed [green]{len(segments)}[/] segments, "
-        f"[green]{total_words:,}[/] words "
-        f"in [cyan]{t_transcribe:.1f}s[/]"
-    )
-
-    # --- Step 2: Detect Ads ---
-    console.print()
-    console.print("[bold cyan]Step 2/3:[/] Detecting advertisements...", highlight=False)
-    console.print()
-
-    t0 = time.time()
-    detector = AdDetector()
-    ad_regions = detector.detect_ads(segments)
-    t_detect = time.time() - t0
-
-    console.print(
-        f"  ✓ Found [yellow]{len(ad_regions)}[/] ad segments "
-        f"in [cyan]{t_detect:.1f}s[/]"
-    )
-
-    if not ad_regions:
+    try:
+        # --- Step 1: Transcribe ---
         console.print()
-        console.print("[green]No ads detected![/] Your episode is clean. 🎉")
-        return
-
-    _print_ad_table(ad_regions)
-
-    # --- Step 3: Process Audio ---
-    console.print()
-    processor = AudioProcessor()
-
-    if preview:
-        console.print("[bold cyan]Step 3/3:[/] Preview mode (no audio changes)", highlight=False)
-        result = processor.preview(audio_path, ad_regions)
-    else:
-        console.print("[bold cyan]Step 3/3:[/] Removing ads and generating clean audio...", highlight=False)
+        console.print("[bold cyan]Step 1/3:[/] Transcribing audio...", highlight=False)
+        console.print(f"  Model: [yellow]{config.whisper_model}[/]  File: [dim]{audio_path.name}[/]")
         console.print()
 
-        output_path = Path(output) if output else None
         t0 = time.time()
-        result = processor.process(audio_path, ad_regions, output_path=output_path)
-        t_process = time.time() - t0
-        console.print(f"  ✓ Audio processed in [cyan]{t_process:.1f}s[/]")
+        
+        if cache_path.exists():
+            console.print(f"  [green]✓[/green] Found cached transcript: [dim]{cache_path.name}[/dim]")
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                segments = [TranscriptSegment.from_dict(d) for d in data]
+        else:
+            transcriber = Transcriber(model_size=model)
+            segments = transcriber.transcribe(audio_path)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump([s.to_dict() for s in segments], f)
+                
+        t_transcribe = time.time() - t0
 
-    _print_result(result)
+        total_words = sum(len(s.words) for s in segments)
+        console.print(
+            f"  ✓ Transcribed [green]{len(segments)}[/] segments, "
+            f"[green]{total_words:,}[/] words "
+            f"in [cyan]{t_transcribe:.1f}s[/]"
+        )
+
+        # --- Step 2: Detect Ads ---
+        console.print()
+        console.print("[bold cyan]Step 2/3:[/] Detecting advertisements...", highlight=False)
+        console.print()
+
+        t0 = time.time()
+        detector = AdDetector()
+        ad_regions = detector.detect_ads(segments)
+        t_detect = time.time() - t0
+
+        console.print(
+            f"  ✓ Found [yellow]{len(ad_regions)}[/] ad segments "
+            f"in [cyan]{t_detect:.1f}s[/]"
+        )
+
+        if not ad_regions:
+            console.print()
+            console.print("[green]No ads detected![/] Your episode is clean. 🎉")
+            if not preview:
+                _cleanup_cache(audio_path, cache_path, config.cache_dir)
+            return
+
+        _print_ad_table(ad_regions)
+
+        # --- Step 3: Process Audio ---
+        console.print()
+        processor = AudioProcessor()
+
+        if preview:
+            console.print("[bold cyan]Step 3/3:[/] Preview mode (no audio changes)", highlight=False)
+            result = processor.preview(audio_path, ad_regions)
+        else:
+            console.print("[bold cyan]Step 3/3:[/] Removing ads and generating clean audio...", highlight=False)
+            console.print()
+
+            output_path = Path(output) if output else None
+            t0 = time.time()
+            result = processor.process(audio_path, ad_regions, output_path=output_path)
+            t_process = time.time() - t0
+            console.print(f"  ✓ Audio processed in [cyan]{t_process:.1f}s[/]")
+
+        _print_result(result)
+
+    except Exception:
+        _cleanup_cache(audio_path, cache_path, config.cache_dir)
+        raise
+
+    if not preview:
+        _cleanup_cache(audio_path, cache_path, config.cache_dir)
+
+
+def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
+    """Delete audio and transcript from the cache directory if present."""
+    if cache_path.exists() and cache_path.parent.resolve() == cache_dir.resolve():
+        try:
+            cache_path.unlink()
+        except OSError:
+            pass
+    if audio_path.exists() and audio_path.parent.resolve() == cache_dir.resolve():
+        try:
+            audio_path.unlink()
+        except OSError:
+            pass
+
 
 
 @click.group()
