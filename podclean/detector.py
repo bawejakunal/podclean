@@ -287,7 +287,7 @@ class AdDetector:
                 )
                 return response.text or ""
             except APIError as exc:
-                if exc.code == 429 and attempt < max_retries - 1:
+                if exc.code in (429, 503) and attempt < max_retries - 1:
                     wait_time = 15 * (attempt + 1)
                     console.print(f"[yellow]Rate limit hit. Waiting {wait_time}s before retry {attempt+1}/{max_retries}...[/]")
                     time.sleep(wait_time)
