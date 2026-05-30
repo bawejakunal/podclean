@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+dist/
+build/
+*.egg-info/
+.venv/
+venv/
+cache/
+output/
+*.mp3
+*.wav
+*.m4a
+*.ogg
+!tests/fixtures/*.mp3
+.DS_Store
