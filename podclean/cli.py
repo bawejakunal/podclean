@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -11,10 +13,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
-from podclean.config import get_config, Config
-from podclean.models import AdRegion, ProcessingResult
+from podclean.config import Config, get_config
+from podclean.detector import AdDetector
+from podclean.fetcher import PodcastFetcher
+from podclean.models import AdRegion, ProcessingResult, TranscriptSegment
+from podclean.processor import AudioProcessor
+from podclean.transcriber import Transcriber
 
 console = Console()
 
@@ -73,13 +78,15 @@ def _print_ad_table(ad_regions: list[AdRegion]) -> None:
 def _print_result(result: ProcessingResult) -> None:
     """Print processing results."""
     console.print()
-    console.print(Panel(
-        result.summary(),
-        title="✅ Processing Complete",
-        title_align="left",
-        border_style="green",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            result.summary(),
+            title="✅ Processing Complete",
+            title_align="left",
+            border_style="green",
+            padding=(1, 2),
+        )
+    )
 
 
 def _run_pipeline(
@@ -90,26 +97,24 @@ def _run_pipeline(
     config: Config,
 ) -> None:
     """Run the full ad detection and removal pipeline."""
-    import json
-    from podclean.transcriber import Transcriber
-    from podclean.detector import AdDetector
-    from podclean.processor import AudioProcessor
-    from podclean.models import TranscriptSegment
-
     cache_path = audio_path.with_suffix(".json")
 
     try:
         # --- Step 1: Transcribe ---
         console.print()
         console.print("[bold cyan]Step 1/3:[/] Transcribing audio...", highlight=False)
-        console.print(f"  Model: [yellow]{config.whisper_model}[/]  File: [dim]{audio_path.name}[/]")
+        console.print(
+            f"  Model: [yellow]{config.whisper_model}[/]  File: [dim]{audio_path.name}[/]"
+        )
         console.print()
 
         t0 = time.time()
-        
+
         if cache_path.exists():
-            console.print(f"  [green]✓[/green] Found cached transcript: [dim]{cache_path.name}[/dim]")
-            with open(cache_path, "r", encoding="utf-8") as f:
+            console.print(
+                f"  [green]✓[/green] Found cached transcript: [dim]{cache_path.name}[/dim]"
+            )
+            with open(cache_path, encoding="utf-8") as f:
                 data = json.load(f)
                 segments = [TranscriptSegment.from_dict(d) for d in data]
         else:
@@ -117,7 +122,7 @@ def _run_pipeline(
             segments = transcriber.transcribe(audio_path)
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump([s.to_dict() for s in segments], f)
-                
+
         t_transcribe = time.time() - t0
 
         total_words = sum(len(s.words) for s in segments)
@@ -129,7 +134,9 @@ def _run_pipeline(
 
         # --- Step 2: Detect Ads ---
         console.print()
-        console.print("[bold cyan]Step 2/3:[/] Detecting advertisements...", highlight=False)
+        console.print(
+            "[bold cyan]Step 2/3:[/] Detecting advertisements...", highlight=False
+        )
         console.print()
 
         t0 = time.time()
@@ -156,10 +163,16 @@ def _run_pipeline(
         processor = AudioProcessor()
 
         if preview:
-            console.print("[bold cyan]Step 3/3:[/] Preview mode (no audio changes)", highlight=False)
+            console.print(
+                "[bold cyan]Step 3/3:[/] Preview mode (no audio changes)",
+                highlight=False,
+            )
             result = processor.preview(audio_path, ad_regions)
         else:
-            console.print("[bold cyan]Step 3/3:[/] Removing ads and generating clean audio...", highlight=False)
+            console.print(
+                "[bold cyan]Step 3/3:[/] Removing ads and generating clean audio...",
+                highlight=False,
+            )
             console.print()
 
             output_path = Path(output) if output else None
@@ -192,7 +205,6 @@ def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
             pass
 
 
-
 @click.group()
 @click.version_option(version="0.1.0", prog_name="podclean")
 def cli() -> None:
@@ -203,11 +215,26 @@ def cli() -> None:
 @cli.command()
 @click.argument("audio_file", type=click.Path(exists=True, path_type=Path))
 @click.option("-o", "--output", type=str, default=None, help="Output file path")
-@click.option("-m", "--model", type=str, default=None,
-              help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)")
-@click.option("--preview", is_flag=True, help="Preview detected ads without processing audio")
-@click.option("--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)")
-def file(audio_file: Path, output: str | None, model: str | None, preview: bool, api_key: str | None) -> None:
+@click.option(
+    "-m",
+    "--model",
+    type=str,
+    default=None,
+    help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)",
+)
+@click.option(
+    "--preview", is_flag=True, help="Preview detected ads without processing audio"
+)
+@click.option(
+    "--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)"
+)
+def file(
+    audio_file: Path,
+    output: str | None,
+    model: str | None,
+    preview: bool,
+    api_key: str | None,
+) -> None:
     """Process a local audio file to remove ads.
 
     Example: podclean file episode.mp3
@@ -236,20 +263,38 @@ def file(audio_file: Path, output: str | None, model: str | None, preview: bool,
 @cli.command()
 @click.argument("rss_url", type=str)
 @click.option("-o", "--output", type=str, default=None, help="Output file path")
-@click.option("-m", "--model", type=str, default=None,
-              help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)")
-@click.option("-n", "--episode-num", type=int, default=1,
-              help="Episode number to process (1 = latest, default: 1)")
-@click.option("--preview", is_flag=True, help="Preview detected ads without processing audio")
-@click.option("--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)")
-def feed(rss_url: str, output: str | None, model: str | None, episode_num: int,
-         preview: bool, api_key: str | None) -> None:
+@click.option(
+    "-m",
+    "--model",
+    type=str,
+    default=None,
+    help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)",
+)
+@click.option(
+    "-n",
+    "--episode-num",
+    type=int,
+    default=1,
+    help="Episode number to process (1 = latest, default: 1)",
+)
+@click.option(
+    "--preview", is_flag=True, help="Preview detected ads without processing audio"
+)
+@click.option(
+    "--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)"
+)
+def feed(
+    rss_url: str,
+    output: str | None,
+    model: str | None,
+    episode_num: int,
+    preview: bool,
+    api_key: str | None,
+) -> None:
     """Process a podcast episode from an RSS feed.
 
     Example: podclean feed "https://rss.art19.com/the-daily-stoic"
     """
-    from podclean.fetcher import PodcastFetcher
-
     _print_banner()
 
     # Build config with overrides
@@ -277,7 +322,9 @@ def feed(rss_url: str, output: str | None, model: str | None, episode_num: int,
         sys.exit(1)
 
     if episode_num < 1 or episode_num > len(episodes):
-        console.print(f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]")
+        console.print(
+            f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]"
+        )
         sys.exit(1)
 
     episode = episodes[episode_num - 1]
@@ -288,9 +335,8 @@ def feed(rss_url: str, output: str | None, model: str | None, episode_num: int,
     console.print(f"Downloaded to: [dim]{audio_path}[/]")
 
     if output is None:
-        import re
         # Remove invalid filename characters and spaces
-        safe_title = re.sub(r'[^\w\s-]', '', episode.title).strip().replace(' ', '_')
+        safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
         output = str(config.output_dir / f"{safe_title}_clean.mp3")
 
     _run_pipeline(audio_path, output, model, preview, config)
@@ -304,8 +350,6 @@ def list_episodes(rss_url: str, limit: int) -> None:
 
     Example: podclean list "https://rss.art19.com/the-daily-stoic"
     """
-    from podclean.fetcher import PodcastFetcher
-
     _print_banner()
 
     fetcher = PodcastFetcher()

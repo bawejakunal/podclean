@@ -58,6 +58,7 @@ _REQUEST_TIMEOUT: int = 30  # seconds
 
 # ── Exceptions ─────────────────────────────────────────────────────────────────
 
+
 class FetcherError(Exception):
     """Base exception for fetcher-related errors."""
 
@@ -75,6 +76,7 @@ class UnsupportedFormatError(FetcherError):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _url_hash(url: str) -> str:
     """Return a short, filesystem-safe hash of *url*."""
@@ -153,6 +155,7 @@ def _best_audio_link(entry: feedparser.FeedParserDict) -> str | None:
 
 # ── PodcastFetcher ─────────────────────────────────────────────────────────────
 
+
 class PodcastFetcher:
     """Fetch podcast episodes from RSS feeds or local files.
 
@@ -193,9 +196,7 @@ class PodcastFetcher:
 
         if feed.bozo and not feed.entries:
             exc = feed.get("bozo_exception")
-            raise FeedParseError(
-                f"Failed to parse RSS feed at {rss_url}: {exc}"
-            )
+            raise FeedParseError(f"Failed to parse RSS feed at {rss_url}: {exc}")
 
         if not feed.entries:
             raise FeedParseError(f"RSS feed at {rss_url} contains no episodes.")
@@ -277,14 +278,14 @@ class PodcastFetcher:
 
         # Refine extension using Content-Type if the URL was ambiguous
         if ext == ".mp3":
-            ct_ext = _extension_for_content_type(
-                response.headers.get("Content-Type")
-            )
+            ct_ext = _extension_for_content_type(response.headers.get("Content-Type"))
             if ct_ext != ext:
                 filename = f"{_url_hash(episode.audio_url)}{ct_ext}"
                 dest = dest_dir / filename
                 if dest.exists():
-                    logger.info("Cache hit (content-type): %s → %s", episode.title, dest)
+                    logger.info(
+                        "Cache hit (content-type): %s → %s", episode.title, dest
+                    )
                     return dest
 
         total_size = int(response.headers.get("Content-Length", 0))
@@ -301,9 +302,7 @@ class PodcastFetcher:
         except OSError as exc:
             # Clean up partial download
             dest.unlink(missing_ok=True)
-            raise DownloadError(
-                f"I/O error while writing {dest}: {exc}"
-            ) from exc
+            raise DownloadError(f"I/O error while writing {dest}: {exc}") from exc
         except requests.RequestException as exc:
             dest.unlink(missing_ok=True)
             raise DownloadError(
@@ -350,9 +349,7 @@ class PodcastFetcher:
         if parsed.scheme in ("http", "https"):
             episodes = self.list_episodes(source, limit=1)
             if not episodes:
-                raise FeedParseError(
-                    f"No episodes with audio found in feed: {source}"
-                )
+                raise FeedParseError(f"No episodes with audio found in feed: {source}")
             return self.download_episode(episodes[0])
 
         # ── Nothing matched ───────────────────────────────────────────────
@@ -392,6 +389,7 @@ class PodcastFetcher:
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────
+
 
 def _truncate(text: str, max_len: int) -> str:
     """Truncate *text* to *max_len* characters, adding ``…`` if shortened."""

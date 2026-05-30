@@ -8,7 +8,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 # Load .env file from project root or current directory
 _env_paths = [
     Path.cwd() / ".env",
@@ -54,7 +53,9 @@ class Config:
     # --- Paths ---
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".podclean" / "cache")
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
-    models_dir: Path = field(default_factory=lambda: Path.home() / ".podclean" / "models")
+    models_dir: Path = field(
+        default_factory=lambda: Path.home() / ".podclean" / "models"
+    )
 
     def __post_init__(self) -> None:
         # Load from environment variables (override defaults)

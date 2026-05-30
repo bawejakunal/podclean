@@ -142,6 +142,7 @@ class ProcessingResult:
 
     def summary(self) -> str:
         """Human-readable summary of processing results."""
+
         def fmt_time(seconds: float) -> str:
             m, s = divmod(int(seconds), 60)
             h, m = divmod(m, 60)

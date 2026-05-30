@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from google import genai
+from google.genai.errors import APIError
 from rich.console import Console
 
 from podclean.config import get_config
@@ -275,9 +277,6 @@ class AdDetector:
 
     def _call_gemini(self, prompt: str) -> str:
         """Make a single Gemini API call and return the text response with retries."""
-        import time
-        from google.genai.errors import APIError
-
         max_retries = 3
         for attempt in range(max_retries):
             try:

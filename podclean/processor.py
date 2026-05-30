@@ -384,6 +384,8 @@ class AudioProcessor:
         if fmt != "wav":
             export_kwargs["bitrate"] = self._cfg.output_bitrate
 
-        console.print(f"[bold blue]Exporting[/] → {path} ({fmt}, {self._cfg.output_bitrate})")
+        console.print(
+            f"[bold blue]Exporting[/] → {path} ({fmt}, {self._cfg.output_bitrate})"
+        )
         audio.export(str(path), **export_kwargs)
         console.print(f"  Wrote {path.stat().st_size / (1024 * 1024):.1f} MB")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import mlx_whisper
 from rich.console import Console
 
 from podclean.config import get_config
@@ -31,7 +32,7 @@ class Transcriber:
     Parameters
     ----------
     model_size:
-        Whisper model HuggingFace repo path (e.g. 
+        Whisper model HuggingFace repo path (e.g.
         ``mlx-community/whisper-large-v3-turbo``). Falls back to the value in
         :func:`podclean.config.get_config` when *None*.
     """
@@ -51,15 +52,12 @@ class Transcriber:
 
     def transcribe(self, audio_path: Path) -> list[TranscriptSegment]:
         """Transcribe an audio file and return word-level segments."""
-        import mlx_whisper
 
         audio_path = Path(audio_path)
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        console.print(
-            f"\n[bold]Transcribing[/bold] [cyan]{audio_path.name}[/cyan]…"
-        )
+        console.print(f"\n[bold]Transcribing[/bold] [cyan]{audio_path.name}[/cyan]…")
         start_time = time.perf_counter()
 
         try:
@@ -75,7 +73,7 @@ class Transcriber:
             ) from exc
 
         language = result.get("language", "unknown")
-        
+
         console.print(f"  [dim]Language:[/dim] {language}")
 
         segments: list[TranscriptSegment] = []
@@ -94,7 +92,7 @@ class Transcriber:
 
         elapsed = time.perf_counter() - start_time
         total_words = sum(len(seg.words) for seg in segments)
-        
+
         console.print(
             f"  [green]✓[/green] Transcription complete — "
             f"[bold]{len(segments)}[/bold] segments, "
@@ -118,4 +116,3 @@ class Transcriber:
             )
             for w in raw_words
         ]
-
