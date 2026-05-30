@@ -287,6 +287,12 @@ def feed(rss_url: str, output: str | None, model: str | None, episode_num: int,
     audio_path = fetcher.download_episode(episode)
     console.print(f"Downloaded to: [dim]{audio_path}[/]")
 
+    if output is None:
+        import re
+        # Remove invalid filename characters and spaces
+        safe_title = re.sub(r'[^\w\s-]', '', episode.title).strip().replace(' ', '_')
+        output = str(config.output_dir / f"{safe_title}_clean.mp3")
+
     _run_pipeline(audio_path, output, model, preview, config)
 
 
