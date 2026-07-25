@@ -6,7 +6,11 @@ import json
 import re
 import sys
 import time
+import warnings
 from pathlib import Path
+
+# Suppress SyntaxWarnings from third-party libraries (like pydub on Python 3.12+)
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 import click
 from rich.console import Console
