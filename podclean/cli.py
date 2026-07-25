@@ -18,8 +18,10 @@ from podclean.config import Config, get_config
 from podclean.detector import AdDetector
 from podclean.fetcher import PodcastFetcher
 from podclean.models import AdRegion, ProcessingResult, TranscriptSegment
+from podclean.notifier import send_notification
 from podclean.processor import AudioProcessor
 from podclean.transcriber import Transcriber
+from podclean.uploader import upload_to_s3
 
 console = Console()
 
@@ -95,7 +97,7 @@ def _run_pipeline(
     model: str | None,
     preview: bool,
     config: Config,
-) -> None:
+) -> ProcessingResult | None:
     """Run the full ad detection and removal pipeline."""
     cache_path = audio_path.with_suffix(".json")
 
@@ -154,7 +156,7 @@ def _run_pipeline(
             console.print("[green]No ads detected![/] Your episode is clean. 🎉")
             if not preview:
                 _cleanup_cache(audio_path, cache_path, config.cache_dir)
-            return
+            return None
 
         _print_ad_table(ad_regions)
 
@@ -189,6 +191,8 @@ def _run_pipeline(
 
     if not preview:
         _cleanup_cache(audio_path, cache_path, config.cache_dir)
+        
+    return result
 
 
 def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
@@ -228,12 +232,16 @@ def cli() -> None:
 @click.option(
     "--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)"
 )
+@click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
+@click.option("--notify", is_flag=True, help="Send email notification with the download link")
 def file(
     audio_file: Path,
     output: str | None,
     model: str | None,
     preview: bool,
     api_key: str | None,
+    upload: bool,
+    notify: bool,
 ) -> None:
     """Process a local audio file to remove ads.
 
@@ -257,7 +265,29 @@ def file(
         sys.exit(1)
 
     console.print(f"Processing: [bold]{audio_file.name}[/]")
-    _run_pipeline(audio_file, output, model, preview, config)
+    result = _run_pipeline(audio_file, output, model, preview, config)
+    
+    if result and not preview:
+        rss_url = None
+        file_url = None
+        if upload or notify:
+            rss_url, file_url = upload_to_s3(Path(result.output_path), episode_title=audio_file.stem)
+            if rss_url and file_url:
+                console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
+                console.print(f"[green]✓ Audio URL:[/] {file_url}")
+            
+        if notify:
+            if rss_url and file_url:
+                success = send_notification(
+                    subject="PodClean: Your audio is ready!",
+                    body=f"Your cleaned podcast episode is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+                )
+                if success:
+                    console.print("[green]✓ Notification sent successfully![/]")
+                else:
+                    console.print("[red]✗ Failed to send notification.[/]")
+            else:
+                console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
 
 
 @cli.command()
@@ -283,6 +313,8 @@ def file(
 @click.option(
     "--api-key", type=str, default=None, help="Gemini API key (or set GEMINI_API_KEY)"
 )
+@click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
+@click.option("--notify", is_flag=True, help="Send email notification with the download link")
 def feed(
     rss_url: str,
     output: str | None,
@@ -290,6 +322,8 @@ def feed(
     episode_num: int,
     preview: bool,
     api_key: str | None,
+    upload: bool,
+    notify: bool,
 ) -> None:
     """Process a podcast episode from an RSS feed.
 
@@ -339,7 +373,30 @@ def feed(
         safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
         output = str(config.output_dir / f"{safe_title}_clean.mp3")
 
-    _run_pipeline(audio_path, output, model, preview, config)
+    result = _run_pipeline(audio_path, output, model, preview, config)
+    
+    if result and not preview:
+        rss_url = None
+        file_url = None
+        if upload or notify:
+            rss_url, file_url = upload_to_s3(Path(result.output_path), episode_title=episode.title)
+            if rss_url and file_url:
+                console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
+                console.print(f"[green]✓ Audio URL:[/] {file_url}")
+            
+        if notify:
+            if rss_url and file_url:
+                success = send_notification(
+                    subject=f"PodClean: {episode.title} is ready!",
+                    body=f"Your cleaned podcast episode '{episode.title}' is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+                )
+                if success:
+                    console.print("[green]✓ Notification sent successfully![/]")
+                else:
+                    console.print("[red]✗ Failed to send notification.[/]")
+            else:
+                console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
+
 
 
 @cli.command(name="list")

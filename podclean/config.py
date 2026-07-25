@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 _env_paths = [
     Path.cwd() / ".env",
     Path(__file__).parent.parent / ".env",
+    Path.home() / ".config" / "podclean" / ".env",
     Path.home() / ".podclean" / ".env",
 ]
 for p in _env_paths:
@@ -50,6 +51,16 @@ class Config:
     fade_out_ms: int = 150
     buffer_seconds: float = 0.5  # buffer before/after ad cuts
 
+    # --- Cloud / Notifications ---
+    aws_access_key_id: str = ""
+    aws_secret_access_key: str = ""
+    aws_bucket_name: str = ""
+    aws_region_name: str = "us-east-1"
+    
+    resend_api_key: str = ""
+    resend_from_email: str = ""
+    email_recipient: str = ""
+
     # --- Paths ---
     cache_dir: Path = field(default_factory=lambda: Path.home() / ".podclean" / "cache")
     output_dir: Path = field(default_factory=lambda: Path.cwd() / "output")
@@ -67,6 +78,15 @@ class Config:
         crossfade_env = os.getenv("CROSSFADE_MS")
         if crossfade_env:
             self.crossfade_ms = int(crossfade_env)
+
+        self.aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", self.aws_access_key_id)
+        self.aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", self.aws_secret_access_key)
+        self.aws_bucket_name = os.getenv("AWS_BUCKET_NAME", self.aws_bucket_name)
+        self.aws_region_name = os.getenv("AWS_REGION_NAME", self.aws_region_name)
+        
+        self.resend_api_key = os.getenv("RESEND_API_KEY", self.resend_api_key)
+        self.resend_from_email = os.getenv("RESEND_FROM_EMAIL", self.resend_from_email)
+        self.email_recipient = os.getenv("EMAIL_RECIPIENT", self.email_recipient)
 
         # Ensure directories exist
         self.cache_dir.mkdir(parents=True, exist_ok=True)
