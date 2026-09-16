@@ -208,3 +208,41 @@ class OrderingTest(TestCase):
         ]
         ordered = sort_items_newest_first(items)
         self.assertEqual([item.title for item in ordered], ["newer", "older"])
+
+    def test_sort_newest_first_new_item_wins_equal_pubdate_tie(self) -> None:
+        """A newly appended item should sort ahead of an existing item with equal pubDate."""
+        same_date = "Wed, 16 Sep 2026 12:00:00 GMT"
+        existing = RssItem(
+            title="Existing",
+            enclosure_url="https://example.com/existing.mp3",
+            enclosure_length="1",
+            pub_date=same_date,
+        )
+        new = RssItem(
+            title="New",
+            enclosure_url="https://example.com/new.mp3",
+            enclosure_length="1",
+            pub_date=same_date,
+        )
+        # new item is appended after existing, simulating upsert insertion
+        ordered = sort_items_newest_first([existing, new])
+        self.assertEqual([item.title for item in ordered], ["New", "Existing"])
+
+    def test_upsert_new_item_wins_equal_pubdate_tie(self) -> None:
+        """upsert_item places a new item ahead of existing items with the same pubDate."""
+        same_date = "Wed, 16 Sep 2026 12:00:00 GMT"
+        existing = RssItem(
+            title="Existing",
+            enclosure_url="https://example.com/existing.mp3",
+            enclosure_length="1",
+            pub_date=same_date,
+        )
+        new = RssItem(
+            title="New",
+            enclosure_url="https://example.com/new.mp3",
+            enclosure_length="1",
+            pub_date=same_date,
+        )
+        merged = upsert_item([existing], new)
+        self.assertEqual(len(merged), 2)
+        self.assertEqual([item.title for item in merged], ["New", "Existing"])

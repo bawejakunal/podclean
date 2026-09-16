@@ -124,8 +124,20 @@ def upsert_item(items: Sequence[RssItem], new_item: RssItem) -> list[RssItem]:
 
 
 def sort_items_newest_first(items: Sequence[RssItem]) -> list[RssItem]:
-    """Return items ordered by ``pubDate``, newest first."""
-    return sorted(items, key=_pubdate_timestamp, reverse=True)
+    """Return items ordered by ``pubDate``, newest first.
+
+    Items with equal ``pubDate`` are ordered by their position in the input,
+    with later items appearing first. This ensures a newly upserted item
+    wins ties against existing items.
+    """
+    return [
+        item
+        for _, item in sorted(
+            enumerate(items),
+            key=lambda pair: (_pubdate_timestamp(pair[1]), pair[0]),
+            reverse=True,
+        )
+    ]
 
 
 def build_rss_xml(
