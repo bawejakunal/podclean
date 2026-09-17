@@ -95,6 +95,16 @@ podclean file episode.mp3 --model large-v3
 | `OUTPUT_FORMAT` | Output format (mp3/wav/m4a) | `mp3` |
 | `OUTPUT_BITRATE` | Output audio bitrate | `192k` |
 | `CROSSFADE_MS` | Crossfade duration between cuts | `300` |
+| `RSS_MAX_ITEMS` | Newest episodes kept in the S3 RSS file (`0` = unlimited) | `300` |
+| `RSS_MAX_BYTES` | Soft cap on player-facing `rss.xml` size (`0` = unlimited) | `524288` |
+
+## S3 RSS feed size
+
+`--upload` writes cleaned audio, a player-facing `podclean/output/rss.xml`, and an uncapped `rss-catalog.xml` beside it. Apple Podcasts (iTunes) and YouTube Music download the public XML file on every refresh — there is no paging.
+
+S3 will serve a large object without trouble. The constraint is the player: many aggregators time out or throttle around **512 KiB**, and Apple Podcasts only **displays the latest 2,000 episodes**. Timeouts are download/parse time, not S3 object size. Static S3 hosting is already the fast path (no PHP generation); S3 also supports the HTTP `HEAD` and byte-range requests Apple requires.
+
+PodClean episode entries are small (no transcripts or long show notes), so **300 newest items stay well under 512 KiB**. Migrated feeds with long inherited `<description>` values are clipped on the public feed, and `RSS_MAX_BYTES` (default 512 KiB) drops oldest items if the XML would still be too large. Full notes remain in `rss-catalog.xml` so raising `RSS_MAX_ITEMS` can republish them. The MP3 objects also stay in the bucket. Set `RSS_MAX_ITEMS=0` and `RSS_MAX_BYTES=0` to publish the full catalog. The IAM principal needs `s3:PutObject` on `podclean/output/` (both `rss.xml` and `rss-catalog.xml`); if the catalog write is denied, the public feed still updates. Prefer a CloudFront distribution if you want gzip — do not upload a gzip-only `rss.xml` to S3, because S3 does not negotiate `Accept-Encoding`.
 
 ## Performance
 

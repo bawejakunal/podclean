@@ -24,6 +24,15 @@ DEFAULT_CHANNEL_DESCRIPTION: Final = "Automated ad-free podcast episodes"
 DEFAULT_CHANNEL_AUTHOR: Final = "PodClean"
 DEFAULT_LANGUAGE: Final = "en"
 DEFAULT_ITUNES_CATEGORY: Final = "Education"
+# Newest-first window published in rss.xml. Item count alone is not a size
+# bound: inherited show notes can still blow past aggregator timeouts.
+DEFAULT_MAX_FEED_ITEMS: Final = 300
+# Player-facing serialized size. Many aggregators time out around 512 KiB.
+DEFAULT_MAX_FEED_BYTES: Final = 512 * 1024
+# Public-feed item text. Catalog (rss-catalog.xml) keeps the full values.
+DEFAULT_MAX_ITEM_DESCRIPTION_CHARS: Final = 500
+DEFAULT_MAX_ITEM_TITLE_CHARS: Final = 255
+DEFAULT_MAX_TITLE_CHARS: Final = DEFAULT_MAX_ITEM_TITLE_CHARS
 
 _AUDIO_MIME_TYPES: Final = {
     ".mp3": "audio/mpeg",
@@ -145,6 +154,132 @@ def upsert_item(items: Sequence[RssItem], new_item: RssItem) -> list[RssItem]:
     if not replaced:
         merged.append(new_item)
     return sort_items_newest_first(merged)
+
+
+def limit_feed_items(
+    items: Sequence[RssItem], max_items: int | None = DEFAULT_MAX_FEED_ITEMS
+) -> list[RssItem]:
+    """Return the newest *max_items* episodes for the public RSS document.
+
+    The S3 object is a single XML file. Players such as Apple Podcasts
+    (iTunes) and YouTube Music download that whole document on each poll,
+    so an unbounded catalog eventually times out. ``max_items`` of ``None``
+    or a non-positive value disables the cap. The uploader keeps omitted
+    items in ``rss-catalog.xml``; audio objects in S3 are not deleted.
+    Item count is not a byte bound — use ``build_public_rss_xml`` so inherited
+    descriptions cannot still produce a multi-megabyte ``rss.xml``.
+    """
+    ordered = sort_items_newest_first(items)
+    if max_items is None or max_items <= 0:
+        return ordered
+    return ordered[:max_items]
+
+
+def clip_text(text: str | None, max_chars: int) -> str | None:
+    """Return *text* truncated to *max_chars*, using an ellipsis when clipped."""
+    if text is None:
+        return None
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    if max_chars == 1:
+        return "…"
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def slim_item(
+    item: RssItem,
+    *,
+    max_description: int = DEFAULT_MAX_ITEM_DESCRIPTION_CHARS,
+    max_title: int = DEFAULT_MAX_TITLE_CHARS,
+) -> RssItem:
+    """Return a copy of *item* with title/description clipped for the public feed."""
+    title = clip_text(item.title, max_title) or item.title
+    return RssItem(
+        title=title,
+        enclosure_url=item.enclosure_url,
+        enclosure_length=item.enclosure_length,
+        enclosure_type=item.enclosure_type,
+        pub_date=item.pub_date,
+        guid=item.guid,
+        duration=item.duration,
+        description=clip_text(item.description, max_description),
+    )
+
+
+def merge_missing_items(
+    primary: Sequence[RssItem], extra: Sequence[RssItem]
+) -> list[RssItem]:
+    """Add *extra* episodes that are not already in *primary*.
+
+    Existing primary items win, so a slim public feed cannot overwrite full
+    catalog descriptions.
+    """
+    merged = list(primary)
+    for item in extra:
+        if any(_same_episode(existing, item) for existing in merged):
+            continue
+        merged = upsert_item(merged, item)
+    return sort_items_newest_first(merged)
+
+
+def build_public_rss_xml(
+    items: Sequence[RssItem],
+    feed_url: str,
+    *,
+    title: str = DEFAULT_CHANNEL_TITLE,
+    description: str = DEFAULT_CHANNEL_DESCRIPTION,
+    author: str = DEFAULT_CHANNEL_AUTHOR,
+    max_items: int | None = DEFAULT_MAX_FEED_ITEMS,
+    max_bytes: int | None = DEFAULT_MAX_FEED_BYTES,
+    max_description: int = DEFAULT_MAX_ITEM_DESCRIPTION_CHARS,
+) -> tuple[list[RssItem], bytes]:
+    """Serialize the player-facing feed within item and byte budgets.
+
+    Inherited episode notes are clipped so a migrated catalog cannot blow past
+    the timeout threshold. Oldest items are dropped until the XML fits
+    *max_bytes*. A non-positive *max_bytes* disables the size cap. At least
+    one item is always kept, even if that single episode still exceeds the
+    budget.
+    """
+    window = [
+        slim_item(item, max_description=max_description)
+        for item in limit_feed_items(items, max_items)
+    ]
+    channel_title = clip_text(title, DEFAULT_MAX_TITLE_CHARS) or DEFAULT_CHANNEL_TITLE
+    channel_description = (
+        clip_text(description, max_description) or DEFAULT_CHANNEL_DESCRIPTION
+    )
+
+    def _serialize(subset: Sequence[RssItem]) -> bytes:
+        return build_rss_xml(
+            subset,
+            feed_url,
+            title=channel_title,
+            description=channel_description,
+            author=author,
+        )
+
+    if not window:
+        xml = _serialize([])
+        return [], xml
+
+    xml = _serialize(window)
+    if max_bytes is None or max_bytes <= 0 or len(xml) <= max_bytes:
+        return window, xml
+
+    lo, hi = 1, len(window) - 1
+    best_n = 1
+    best_xml = _serialize(window[:1])
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate_xml = _serialize(window[:mid])
+        if len(candidate_xml) <= max_bytes:
+            best_n = mid
+            best_xml = candidate_xml
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return window[:best_n], best_xml
 
 
 def sort_items_newest_first(items: Sequence[RssItem]) -> list[RssItem]:
