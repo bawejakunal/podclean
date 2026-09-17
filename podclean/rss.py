@@ -111,13 +111,33 @@ def upsert_item(items: Sequence[RssItem], new_item: RssItem) -> list[RssItem]:
 
     When multiple existing items match *new_item*, the replacement is appended
     only for the first match; subsequent matching duplicates are dropped.
+
+    When an existing episode is matched solely by enclosure URL (not by equal
+    GUID), the replacement retains the existing item's GUID to preserve custom
+    stable identifiers during re-upload.
     """
     merged: list[RssItem] = []
     replaced = False
     for item in items:
         if _same_episode(item, new_item):
             if not replaced:
-                merged.append(new_item)
+                # If matched by GUID equality, use new_item as-is.
+                # If matched only by enclosure URL, preserve existing GUID.
+                if item.guid and new_item.guid and item.guid == new_item.guid:
+                    merged.append(new_item)
+                else:
+                    merged.append(
+                        RssItem(
+                            title=new_item.title,
+                            enclosure_url=new_item.enclosure_url,
+                            enclosure_length=new_item.enclosure_length,
+                            enclosure_type=new_item.enclosure_type,
+                            pub_date=new_item.pub_date,
+                            guid=item.guid,
+                            duration=new_item.duration,
+                            description=new_item.description,
+                        )
+                    )
                 replaced = True
             # Skip subsequent matching duplicates
         else:

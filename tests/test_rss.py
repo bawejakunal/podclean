@@ -274,6 +274,63 @@ class ParseAndUpgradeTest(TestCase):
         self.assertNotIn("First Duplicate", titles)
         self.assertNotIn("Second Duplicate", titles)
 
+    def test_upsert_preserves_custom_guid_when_matched_by_enclosure_url(self) -> None:
+        """Existing custom GUID is retained when matched by enclosure URL, not GUID."""
+        custom_guid = "custom-stable-id-abc123"
+        items = [
+            RssItem(
+                title="Original Episode",
+                enclosure_url="https://example.com/episode.mp3",
+                enclosure_length="1000",
+                pub_date="Mon, 14 Sep 2026 00:00:00 GMT",
+                guid=custom_guid,
+            )
+        ]
+        # New item has default GUID (equals enclosure_url due to __post_init__)
+        new_item = RssItem(
+            title="Reprocessed Episode",
+            enclosure_url="https://example.com/episode.mp3",
+            enclosure_length="2000",
+            pub_date="Wed, 16 Sep 2026 00:00:00 GMT",
+        )
+        # Verify new_item's GUID defaulted to enclosure URL
+        self.assertEqual(new_item.guid, "https://example.com/episode.mp3")
+
+        updated = upsert_item(items, new_item)
+
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0].title, "Reprocessed Episode")
+        self.assertEqual(updated[0].enclosure_length, "2000")
+        # Custom GUID should be preserved, not overwritten by enclosure URL
+        self.assertEqual(updated[0].guid, custom_guid)
+
+    def test_upsert_uses_new_guid_when_matched_by_equal_guid(self) -> None:
+        """When matched by equal GUID, replacement uses the new item's GUID."""
+        shared_guid = "shared-guid-xyz"
+        items = [
+            RssItem(
+                title="Original Episode",
+                enclosure_url="https://example.com/old.mp3",
+                enclosure_length="1000",
+                pub_date="Mon, 14 Sep 2026 00:00:00 GMT",
+                guid=shared_guid,
+            )
+        ]
+        new_item = RssItem(
+            title="Updated Episode",
+            enclosure_url="https://example.com/new.mp3",
+            enclosure_length="2000",
+            pub_date="Wed, 16 Sep 2026 00:00:00 GMT",
+            guid=shared_guid,
+        )
+
+        updated = upsert_item(items, new_item)
+
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0].title, "Updated Episode")
+        self.assertEqual(updated[0].enclosure_url, "https://example.com/new.mp3")
+        self.assertEqual(updated[0].guid, shared_guid)
+
 
 class OrderingTest(TestCase):
     def test_sort_newest_first_handles_rfc822_variants(self) -> None:
