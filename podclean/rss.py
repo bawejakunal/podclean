@@ -87,13 +87,11 @@ def parse_rss_feed(xml: str | bytes) -> tuple[str, str, list[RssItem]]:
 
     Missing ``<guid>`` values are filled from the enclosure URL so existing
     episodes keep a stable identity after the feed is rewritten.
-    """
-    if isinstance(xml, str):
-        xml_bytes = xml.encode("utf-8")
-    else:
-        xml_bytes = xml
 
-    root = ET.fromstring(xml_bytes)
+    When *xml* is a ``str``, it is passed directly to the parser; when it is
+    ``bytes``, the parser honours the encoding declared in the XML prolog.
+    """
+    root = ET.fromstring(xml)
     channel = _find_child(root, "channel")
     if channel is None:
         if _localname(root.tag) == "channel":

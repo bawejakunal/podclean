@@ -246,3 +246,33 @@ class OrderingTest(TestCase):
         merged = upsert_item([existing], new)
         self.assertEqual(len(merged), 2)
         self.assertEqual([item.title for item in merged], ["New", "Existing"])
+
+
+class NonUtf8DeclarationTest(TestCase):
+    """Tests for parsing feeds with non-UTF-8 encoding declarations."""
+
+    def test_str_feed_with_non_utf8_declaration_preserves_non_ascii(self) -> None:
+        """str input with ISO-8859-1 declaration and non-ASCII text parses correctly."""
+        # A Python str containing an XML declaration that claims ISO-8859-1.
+        # Since it's already a str, the encoding declaration is irrelevant;
+        # the parser must accept it without re-encoding and without mojibake.
+        feed = (
+            "<?xml version='1.0' encoding='ISO-8859-1'?>\n"
+            "<rss version='2.0'>\n"
+            "  <channel>\n"
+            "    <title>Café Podcast</title>\n"
+            "    <description>Ñoño Episodes — résumé</description>\n"
+            "    <item>\n"
+            "      <title>Épisode Spécial</title>\n"
+            "      <enclosure url='https://example.com/episode.mp3' "
+            "length='1234' type='audio/mpeg' />\n"
+            "    </item>\n"
+            "  </channel>\n"
+            "</rss>"
+        )
+        title, description, items = parse_rss_feed(feed)
+
+        self.assertEqual(title, "Café Podcast")
+        self.assertEqual(description, "Ñoño Episodes — résumé")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].title, "Épisode Spécial")
