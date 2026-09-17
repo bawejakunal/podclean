@@ -71,7 +71,7 @@ def format_itunes_duration(seconds: float | int | None) -> str | None:
         return None
     try:
         total = int(round(float(seconds)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if total < 0:
         return None

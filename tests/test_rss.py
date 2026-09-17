@@ -78,6 +78,11 @@ class FormatHelpersTest(TestCase):
         self.assertIsNone(format_itunes_duration(None))
         self.assertIsNone(format_itunes_duration(-3))
 
+    def test_itunes_duration_infinite_returns_none(self) -> None:
+        """Infinite durations should be treated as invalid and return None."""
+        self.assertIsNone(format_itunes_duration(float("inf")))
+        self.assertIsNone(format_itunes_duration(float("-inf")))
+
     def test_audio_mime_type_by_extension(self) -> None:
         self.assertEqual(audio_mime_type("ep.mp3"), "audio/mpeg")
         self.assertEqual(audio_mime_type("ep.m4a"), "audio/mp4")
