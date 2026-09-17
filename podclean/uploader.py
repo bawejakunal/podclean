@@ -110,16 +110,18 @@ def _update_rss_feed(
     mime_type: str = "audio/mpeg",
     max_items: int | None = DEFAULT_MAX_FEED_ITEMS,
 ) -> None:
-    """Download the existing RSS feed, rewrite it with the new episode, and upload.
+    """Download the existing catalog, rewrite it with the new episode, and upload.
 
     Existing sparse feeds are upgraded in place: items are reordered newest-first,
     missing GUIDs are filled from enclosure URLs, and podcast/iTunes metadata is
     added. Channel ``<link>`` is set to the feed URL rather than an audio file.
 
-    Only the newest ``max_items`` episodes are written back to S3 so the XML
-    stays small enough for Apple Podcasts and YouTube Music to fetch quickly.
-    Pass ``0`` or ``None`` to keep the full catalog.
+    The uncapped catalog is stored next to the public feed (``rss-catalog.xml``)
+    so omitted episodes can be republished if ``RSS_MAX_ITEMS`` is raised later.
+    Only the newest ``max_items`` episodes are written to the public ``rss.xml``.
+    Pass ``0`` or ``None`` to publish the full catalog.
     """
+    catalog_key = _catalog_key(rss_key)
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp_path = tmp.name
 
@@ -140,55 +142,91 @@ def _update_rss_feed(
         items = upsert_item(items, new_item)
         published = limit_feed_items(items, max_items)
         omitted = len(items) - len(published)
-        xml_bytes = build_rss_xml(
-            published,
+        catalog_xml = build_rss_xml(
+            items,
             feed_url=feed_url,
             title=channel_title,
             description=channel_description,
         )
-        Path(tmp_path).write_bytes(xml_bytes)
-
-        s3_client.upload_file(
-            tmp_path,
-            bucket,
-            rss_key,
-            ExtraArgs={
-                "ContentType": "application/rss+xml",
-                "CacheControl": "max-age=0, must-revalidate",
-            },
+        published_xml = (
+            catalog_xml
+            if omitted == 0
+            else build_rss_xml(
+                published,
+                feed_url=feed_url,
+                title=channel_title,
+                description=channel_description,
+            )
         )
+        _put_rss_object(s3_client, bucket, catalog_key, catalog_xml, tmp_path)
+        _put_rss_object(s3_client, bucket, rss_key, published_xml, tmp_path)
         if omitted:
             print(
                 f"RSS feed updated successfully ({len(published)} episodes, "
-                f"{len(xml_bytes)} bytes); omitted {omitted} older items "
+                f"{len(published_xml)} bytes); omitted {omitted} older items "
                 f"(RSS_MAX_ITEMS={max_items})."
             )
         else:
             print(
                 f"RSS feed updated successfully "
-                f"({len(published)} episodes, {len(xml_bytes)} bytes)."
+                f"({len(published)} episodes, {len(published_xml)} bytes)."
             )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
 
+def _catalog_key(rss_key: str) -> str:
+    """Return the S3 key for the uncapped catalog beside the public feed."""
+    if rss_key.endswith(".xml"):
+        return f"{rss_key[:-4]}-catalog.xml"
+    return f"{rss_key}-catalog.xml"
+
+
+_RSS_UPLOAD_ARGS: dict[str, str] = {
+    "ContentType": "application/rss+xml",
+    "CacheControl": "max-age=0, must-revalidate",
+}
+
+
+def _put_rss_object(
+    s3_client, bucket: str, key: str, xml_bytes: bytes, tmp_path: str
+) -> None:
+    Path(tmp_path).write_bytes(xml_bytes)
+    s3_client.upload_file(tmp_path, bucket, key, ExtraArgs=_RSS_UPLOAD_ARGS)
+
+
 def _load_existing_feed(
     s3_client, bucket: str, rss_key: str, tmp_path: str
 ) -> tuple[str, str, list[RssItem]]:
-    """Return channel metadata and items from S3, or defaults if none exists."""
+    """Return channel metadata and items from the catalog, or the public feed.
+
+    Prefers ``rss-catalog.xml`` so a later raise of ``RSS_MAX_ITEMS`` can
+    republish episodes that were omitted from the player-facing feed.
+    Falls back to ``rss.xml`` so existing single-file buckets still upgrade.
+    """
+    for key in (_catalog_key(rss_key), rss_key):
+        loaded = _try_load_feed(s3_client, bucket, key, tmp_path)
+        if loaded is not None:
+            return loaded
+    return DEFAULT_CHANNEL_TITLE, DEFAULT_CHANNEL_DESCRIPTION, []
+
+
+def _try_load_feed(
+    s3_client, bucket: str, key: str, tmp_path: str
+) -> tuple[str, str, list[RssItem]] | None:
     try:
-        s3_client.download_file(bucket, rss_key, tmp_path)
+        s3_client.download_file(bucket, key, tmp_path)
     except ClientError as exc:
         error_code = str(exc.response.get("Error", {}).get("Code", ""))
         if error_code in {"404", "NoSuchKey"}:
-            return DEFAULT_CHANNEL_TITLE, DEFAULT_CHANNEL_DESCRIPTION, []
+            return None
         raise
 
     try:
         return parse_rss_feed(Path(tmp_path).read_bytes())
     except ET.ParseError:
-        print("Existing RSS feed could not be parsed; rebuilding from the new episode.")
-        return DEFAULT_CHANNEL_TITLE, DEFAULT_CHANNEL_DESCRIPTION, []
+        print(f"Existing RSS object {key} could not be parsed; trying a fallback.")
+        return None
 
 
 def _probe_audio_duration_seconds(file_path: Path) -> float | None:

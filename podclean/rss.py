@@ -158,8 +158,8 @@ def limit_feed_items(
     The S3 object is a single XML file. Players such as Apple Podcasts
     (iTunes) and YouTube Music download that whole document on each poll,
     so an unbounded catalog eventually times out. ``max_items`` of ``None``
-    or a non-positive value disables the cap. Audio objects already in S3
-    are not deleted when they fall out of the feed.
+    or a non-positive value disables the cap. The uploader keeps omitted
+    items in ``rss-catalog.xml``; audio objects in S3 are not deleted.
     """
     ordered = sort_items_newest_first(items)
     if max_items is None or max_items <= 0:
