@@ -39,7 +39,9 @@ uv python install 3.13
 # --- Project virtual environment -----------------------------------------
 if [ ! -x ".venv/bin/python" ]; then
   log "Creating .venv (Python 3.13)"
-  uv venv --python 3.13 .venv
+  # --seed bundles pip/setuptools so the README's `pip install -e .` workflow
+  # and `python -m pip` work inside the venv, not just `uv pip`.
+  uv venv --seed --python 3.13 .venv
 else
   log ".venv already exists"
 fi
