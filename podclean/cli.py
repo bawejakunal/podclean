@@ -271,7 +271,11 @@ def file(
         rss_url = None
         file_url = None
         if upload or notify:
-            rss_url, file_url = upload_to_s3(Path(result.output_path), episode_title=audio_file.stem)
+            rss_url, file_url = upload_to_s3(
+                Path(result.output_path),
+                episode_title=audio_file.stem,
+                duration_seconds=result.cleaned_duration,
+            )
             if rss_url and file_url:
                 console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
                 console.print(f"[green]✓ Audio URL:[/] {file_url}")
@@ -379,7 +383,11 @@ def feed(
         rss_url = None
         file_url = None
         if upload or notify:
-            rss_url, file_url = upload_to_s3(Path(result.output_path), episode_title=episode.title)
+            rss_url, file_url = upload_to_s3(
+                Path(result.output_path),
+                episode_title=episode.title,
+                duration_seconds=result.cleaned_duration,
+            )
             if rss_url and file_url:
                 console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
                 console.print(f"[green]✓ Audio URL:[/] {file_url}")
