@@ -71,7 +71,7 @@ def format_itunes_duration(seconds: float | int | None) -> str | None:
         return None
     try:
         total = int(round(float(seconds)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if total < 0:
         return None
@@ -107,13 +107,19 @@ def parse_rss_feed(xml: str | bytes) -> tuple[str, str, list[RssItem]]:
 
 
 def upsert_item(items: Sequence[RssItem], new_item: RssItem) -> list[RssItem]:
-    """Insert or replace an episode, identified by guid or enclosure URL."""
+    """Insert or replace an episode, identified by guid or enclosure URL.
+
+    When multiple existing items match *new_item*, the replacement is appended
+    only for the first match; subsequent matching duplicates are dropped.
+    """
     merged: list[RssItem] = []
     replaced = False
     for item in items:
         if _same_episode(item, new_item):
-            merged.append(new_item)
-            replaced = True
+            if not replaced:
+                merged.append(new_item)
+                replaced = True
+            # Skip subsequent matching duplicates
         else:
             merged.append(item)
     if not replaced:
