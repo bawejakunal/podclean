@@ -204,10 +204,16 @@ def _put_catalog_object(
     try:
         _put_rss_object(s3_client, bucket, key, xml_bytes, tmp_path)
     except ClientError as exc:
+        error = exc.response.get("Error", {}) if exc.response else {}
+        code = str(error.get("Code") or "")
+        metadata = exc.response.get("ResponseMetadata") if exc.response else None
+        status = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+        detail = code or (f"HTTP {status}" if status else str(exc))
         print(
-            f"Warning: could not write {key}: {exc}. "
-            "Public rss.xml was still updated. Grant s3:PutObject on that key "
-            "(or the podclean/output/ prefix) to keep a restorable full catalog."
+            f"Warning: catalog PutObject denied for {key} ({detail}). "
+            "Public rss.xml was still updated. Grant s3:PutObject for both "
+            "rss.xml and rss-catalog.xml under podclean/output/ so omitted "
+            "episodes stay restorable."
         )
 
 

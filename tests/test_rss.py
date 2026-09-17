@@ -538,8 +538,54 @@ class PublicFeedBudgetTest(TestCase):
             for i in range(DEFAULT_MAX_FEED_ITEMS)
         ]
         published, xml = build_public_rss_xml(items, feed_url=FEED_URL)
+        catalog = build_rss_xml(items, feed_url=FEED_URL)
         self.assertLessEqual(len(xml), DEFAULT_MAX_FEED_BYTES)
+        self.assertGreater(len(catalog), DEFAULT_MAX_FEED_BYTES)
         self.assertEqual(len(published), DEFAULT_MAX_FEED_ITEMS)
+        for item in published:
+            assert item.description is not None
+            self.assertLessEqual(len(item.description), DEFAULT_MAX_ITEM_DESCRIPTION_CHARS)
+        _, _, catalog_items = parse_rss_feed(catalog)
+        self.assertEqual(len(catalog_items[0].description or ""), 8000)
+
+    def test_byte_budget_drops_oldest_items(self) -> None:
+        items = [
+            RssItem(
+                title=f"Episode {i:02d}",
+                enclosure_url=f"https://example.com/ep{i:02d}.mp3",
+                enclosure_length="1",
+                pub_date=f"Wed, {i:02d} Sep 2026 12:00:00 GMT",
+                description="n" * 400,
+            )
+            for i in range(1, 11)
+        ]
+        _, full_xml = build_public_rss_xml(
+            items, feed_url=FEED_URL, max_items=0, max_bytes=0
+        )
+        _, one_xml = build_public_rss_xml(
+            [items[-1]], feed_url=FEED_URL, max_items=0, max_bytes=0
+        )
+        budget = (len(full_xml) + len(one_xml)) // 2
+        published, xml = build_public_rss_xml(
+            items, feed_url=FEED_URL, max_items=0, max_bytes=budget
+        )
+        self.assertLessEqual(len(xml), budget)
+        self.assertLess(len(published), 10)
+        self.assertGreaterEqual(len(published), 1)
+        titles = [item.title for item in published]
+        self.assertEqual(titles[0], "Episode 10")
+        self.assertNotIn("Episode 01", titles)
+
+    def test_byte_budget_keeps_at_least_one_item(self) -> None:
+        item = RssItem(
+            title="Huge",
+            enclosure_url="https://example.com/huge.mp3",
+            enclosure_length="1",
+            description="y" * 500,
+        )
+        published, xml = build_public_rss_xml([item], feed_url=FEED_URL, max_bytes=50)
+        self.assertEqual([item.title for item in published], ["Huge"])
+        self.assertGreater(len(xml), 50)
 
 
 class NonUtf8DeclarationTest(TestCase):

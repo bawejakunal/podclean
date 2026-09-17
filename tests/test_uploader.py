@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, mock
 
 from botocore.exceptions import ClientError
 
@@ -266,18 +267,24 @@ class UpdateRssFeedTest(TestCase):
 
     def test_catalog_access_denied_still_updates_public_feed(self) -> None:
         s3 = FakeS3(deny_keys={CATALOG_KEY})
-        _update_rss_feed(
-            s3,
-            "bucket",
-            RSS_KEY,
-            "https://example.com/podclean/output/ep.mp3",
-            1234,
-            "First Episode",
-            feed_url=FEED_URL,
-        )
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            _update_rss_feed(
+                s3,
+                "bucket",
+                RSS_KEY,
+                "https://example.com/podclean/output/ep.mp3",
+                1234,
+                "First Episode",
+                feed_url=FEED_URL,
+            )
         self.assertIn(RSS_KEY, s3.objects)
         self.assertNotIn(CATALOG_KEY, s3.objects)
         self.assertEqual(_item_titles(s3.objects[RSS_KEY]), ["First Episode"])
+        warning = stdout.getvalue()
+        self.assertIn("Warning: catalog PutObject denied", warning)
+        self.assertIn("AccessDenied", warning)
+        self.assertIn("rss.xml was still updated", warning)
 
     def test_stale_catalog_merges_public_only_episode(self) -> None:
         catalog = [

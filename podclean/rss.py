@@ -32,9 +32,7 @@ DEFAULT_MAX_FEED_BYTES: Final = 512 * 1024
 # Public-feed item text. Catalog (rss-catalog.xml) keeps the full values.
 DEFAULT_MAX_ITEM_DESCRIPTION_CHARS: Final = 500
 DEFAULT_MAX_ITEM_TITLE_CHARS: Final = 255
-DEFAULT_MAX_FEED_BYTES: Final = 512 * 1024
-DEFAULT_MAX_ITEM_DESCRIPTION_CHARS: Final = 500
-DEFAULT_MAX_TITLE_CHARS: Final = 255
+DEFAULT_MAX_TITLE_CHARS: Final = DEFAULT_MAX_ITEM_TITLE_CHARS
 
 _AUDIO_MIME_TYPES: Final = {
     ".mp3": "audio/mpeg",
@@ -175,119 +173,6 @@ def limit_feed_items(
     if max_items is None or max_items <= 0:
         return ordered
     return ordered[:max_items]
-
-
-def clip_text(text: str | None, max_chars: int) -> str:
-    """Return *text* clipped to *max_chars*, with an ellipsis when truncated.
-
-    ``max_chars`` of ``0`` or less leaves the string unchanged.
-    """
-    value = text or ""
-    if max_chars <= 0 or len(value) <= max_chars:
-        return value
-    if max_chars == 1:
-        return "…"
-    clipped = value[: max_chars - 1].rstrip()
-    if len(clipped) >= max_chars:
-        clipped = clipped[: max_chars - 1]
-    return clipped + "…"
-
-
-def slim_item(
-    item: RssItem,
-    *,
-    max_description_chars: int = DEFAULT_MAX_ITEM_DESCRIPTION_CHARS,
-    max_title_chars: int = DEFAULT_MAX_ITEM_TITLE_CHARS,
-) -> RssItem:
-    """Return a public-feed copy with clipped title and description.
-
-    Full text stays in the catalog; only ``rss.xml`` should use slimmed items.
-    """
-    title = clip_text(item.title, max_title_chars)
-    description = clip_text(item.description, max_description_chars)
-    return RssItem(
-        title=title,
-        enclosure_url=item.enclosure_url,
-        enclosure_length=item.enclosure_length,
-        enclosure_type=item.enclosure_type,
-        pub_date=item.pub_date,
-        guid=item.guid,
-        duration=item.duration,
-        description=description or title,
-    )
-
-
-def merge_feed_items(
-    preferred: Sequence[RssItem], extra: Sequence[RssItem]
-) -> list[RssItem]:
-    """Keep *preferred* episodes and append any *extra* episodes not already present.
-
-    Identity matches ``upsert_item`` (guid, then enclosure URL). Preferred rows
-    keep their metadata, so a catalog description is not overwritten by a
-    slimmed public-feed copy. Used when a stale ``rss-catalog.xml`` must be
-    merged with a newer public ``rss.xml``.
-    """
-    merged = list(preferred)
-    for item in extra:
-        if not any(_same_episode(existing, item) for existing in merged):
-            merged.append(item)
-    return sort_items_newest_first(merged)
-
-
-def build_public_rss_xml(
-    items: Sequence[RssItem],
-    feed_url: str,
-    *,
-    title: str = DEFAULT_CHANNEL_TITLE,
-    description: str = DEFAULT_CHANNEL_DESCRIPTION,
-    author: str = DEFAULT_CHANNEL_AUTHOR,
-    max_items: int | None = DEFAULT_MAX_FEED_ITEMS,
-    max_bytes: int | None = DEFAULT_MAX_FEED_BYTES,
-    max_description_chars: int = DEFAULT_MAX_ITEM_DESCRIPTION_CHARS,
-) -> bytes:
-    """Serialize the player-facing RSS document under item and byte caps.
-
-    Newest-first windowing uses ``limit_feed_items``. Each item is slimmed so
-    inherited multi-kilobyte descriptions cannot inflate ``rss.xml``. The
-    result is then shrunk (dropping oldest items) until ``len(xml) <= max_bytes``.
-    At least one item is always kept, even if that single item exceeds the
-    budget. ``max_items`` or ``max_bytes`` of ``None`` or ``<= 0`` disables
-    that cap. Channel metadata is not clipped.
-    """
-    window = limit_feed_items(items, max_items)
-    slimmed = [
-        slim_item(item, max_description_chars=max_description_chars) for item in window
-    ]
-
-    def serialize(subset: Sequence[RssItem]) -> bytes:
-        return build_rss_xml(
-            subset,
-            feed_url,
-            title=title,
-            description=description,
-            author=author,
-        )
-
-    if not slimmed:
-        return serialize([])
-
-    xml = serialize(slimmed)
-    if max_bytes is None or max_bytes <= 0 or len(xml) <= max_bytes:
-        return xml
-
-    # Binary search the largest newest-first prefix that fits. Always keep
-    # slimmed[0] even when that one item is over budget.
-    lo, hi = 1, len(slimmed)
-    best = serialize(slimmed[:1])
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        candidate = serialize(slimmed[:mid])
-        if len(candidate) <= max_bytes:
-            best = candidate
-            lo = mid + 1
-        else:
-            hi = mid - 1
-    return best
 
 
 def clip_text(text: str | None, max_chars: int) -> str | None:
