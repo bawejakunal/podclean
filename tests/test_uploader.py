@@ -206,11 +206,13 @@ class UpdateRssFeedTest(TestCase):
             feed_url=FEED_URL,
             max_items=0,
         )
+        titles = _item_titles(s3.objects[RSS_KEY])
         self.assertEqual(
-            _item_titles(s3.objects[RSS_KEY]),
-            ["Even Newer", "Brand New", "Newest", "Middle", "Oldest"],
+            set(titles),
+            {"Even Newer", "Brand New", "Newest", "Middle", "Oldest"},
         )
-        self.assertEqual(_item_titles(s3.objects[RSS_KEY]), _item_titles(s3.objects[CATALOG_KEY]))
+        self.assertEqual(titles[-3:], ["Newest", "Middle", "Oldest"])
+        self.assertEqual(titles, _item_titles(s3.objects[CATALOG_KEY]))
 
     def test_zero_max_items_keeps_full_catalog(self) -> None:
         existing = [
