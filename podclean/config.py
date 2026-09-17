@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .rss import DEFAULT_MAX_FEED_ITEMS
+from .rss import DEFAULT_MAX_FEED_BYTES, DEFAULT_MAX_FEED_ITEMS
 
 # Load .env file from project root or current directory
 _env_paths = [
@@ -60,6 +60,8 @@ class Config:
     aws_region_name: str = "us-east-1"
     # Newest episodes kept in the public S3 RSS file. 0 = unlimited.
     rss_max_items: int = DEFAULT_MAX_FEED_ITEMS
+    # Soft cap on the player-facing rss.xml size. 0 = unlimited.
+    rss_max_bytes: int = DEFAULT_MAX_FEED_BYTES
     
     resend_api_key: str = ""
     resend_from_email: str = ""
@@ -92,6 +94,13 @@ class Config:
         if rss_max_items_env is not None and rss_max_items_env.strip() != "":
             try:
                 self.rss_max_items = int(rss_max_items_env)
+            except ValueError:
+                pass
+
+        rss_max_bytes_env = os.getenv("RSS_MAX_BYTES")
+        if rss_max_bytes_env is not None and rss_max_bytes_env.strip() != "":
+            try:
+                self.rss_max_bytes = int(rss_max_bytes_env)
             except ValueError:
                 pass
         

@@ -16,15 +16,24 @@ RSS_KEY = "podclean/output/rss.xml"
 CATALOG_KEY = "podclean/output/rss-catalog.xml"
 
 
-def _item_titles(xml: bytes) -> list[str | None]:
+def _channel_items(xml: bytes) -> list[ET.Element]:
     channel = ET.fromstring(xml).find("channel")
     assert channel is not None
-    return [item.findtext("title") for item in channel.findall("item")]
+    return channel.findall("item")
+
+
+def _item_titles(xml: bytes) -> list[str | None]:
+    return [item.findtext("title") for item in _channel_items(xml)]
 
 
 class FakeS3:
-    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+    def __init__(
+        self,
+        objects: dict[str, bytes] | None = None,
+        deny_keys: set[str] | None = None,
+    ) -> None:
         self.objects = dict(objects or {})
+        self.deny_keys = set(deny_keys or [])
         self.uploads: list[tuple[str, bytes, dict | None]] = []
 
     def download_file(self, bucket: str, key: str, filename: str) -> None:
@@ -39,6 +48,11 @@ class FakeS3:
         key: str,
         ExtraArgs: dict | None = None,
     ) -> None:
+        if key in self.deny_keys:
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+                "PutObject",
+            )
         data = Path(filename).read_bytes()
         self.objects[key] = data
         self.uploads.append((key, data, ExtraArgs))
@@ -59,8 +73,8 @@ class UpdateRssFeedTest(TestCase):
         )
         self.assertEqual(len(s3.uploads), 2)
         keys = [key for key, _, _ in s3.uploads]
-        self.assertEqual(keys, [CATALOG_KEY, RSS_KEY])
-        key, xml, extra = s3.uploads[1]
+        self.assertEqual(keys, [RSS_KEY, CATALOG_KEY])
+        key, xml, extra = s3.uploads[0]
         self.assertEqual(key, "podclean/output/rss.xml")
         assert extra is not None
         self.assertEqual(extra["ContentType"], "application/rss+xml")
@@ -212,7 +226,10 @@ class UpdateRssFeedTest(TestCase):
             {"Even Newer", "Brand New", "Newest", "Middle", "Oldest"},
         )
         self.assertEqual(titles[-3:], ["Newest", "Middle", "Oldest"])
-        self.assertEqual(titles, _item_titles(s3.objects[CATALOG_KEY]))
+        self.assertEqual(
+            set(titles),
+            set(_item_titles(s3.objects[CATALOG_KEY])),
+        )
 
     def test_zero_max_items_keeps_full_catalog(self) -> None:
         existing = [
@@ -246,3 +263,96 @@ class UpdateRssFeedTest(TestCase):
         assert channel is not None
         self.assertEqual(len(channel.findall("item")), 5)
         self.assertEqual(len(_item_titles(s3.objects[CATALOG_KEY])), 5)
+
+    def test_catalog_access_denied_still_updates_public_feed(self) -> None:
+        s3 = FakeS3(deny_keys={CATALOG_KEY})
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/ep.mp3",
+            1234,
+            "First Episode",
+            feed_url=FEED_URL,
+        )
+        self.assertIn(RSS_KEY, s3.objects)
+        self.assertNotIn(CATALOG_KEY, s3.objects)
+        self.assertEqual(_item_titles(s3.objects[RSS_KEY]), ["First Episode"])
+
+    def test_stale_catalog_merges_public_only_episode(self) -> None:
+        catalog = [
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+                description="full notes for oldest",
+            )
+        ]
+        public = [
+            RssItem(
+                title="Newest",
+                enclosure_url="https://example.com/podclean/output/newest.mp3",
+                enclosure_length="3",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+                description="clipped…",
+            ),
+        ]
+        s3 = FakeS3(
+            {
+                CATALOG_KEY: build_rss_xml(catalog, feed_url=FEED_URL),
+                RSS_KEY: build_rss_xml(public, feed_url=FEED_URL),
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            max_items=10,
+        )
+        catalog_titles = _item_titles(s3.objects[CATALOG_KEY])
+        self.assertEqual(set(catalog_titles), {"Brand New", "Newest", "Oldest"})
+        catalog_items = _channel_items(s3.objects[CATALOG_KEY])
+        oldest = next(item for item in catalog_items if item.findtext("title") == "Oldest")
+        self.assertEqual(oldest.findtext("description"), "full notes for oldest")
+
+    def test_public_feed_clips_inherited_descriptions(self) -> None:
+        existing = [
+            RssItem(
+                title="Verbose",
+                enclosure_url="https://example.com/podclean/output/verbose.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+                description="SHOW NOTES " + ("word " * 2000),
+            )
+        ]
+        s3 = FakeS3({RSS_KEY: build_rss_xml(existing, feed_url=FEED_URL)})
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            max_items=10,
+        )
+        public_items = _channel_items(s3.objects[RSS_KEY])
+        verbose = next(item for item in public_items if item.findtext("title") == "Verbose")
+        public_description = verbose.findtext("description") or ""
+        self.assertLessEqual(len(public_description), 500)
+        catalog_items = _channel_items(s3.objects[CATALOG_KEY])
+        catalog_verbose = next(
+            item for item in catalog_items if item.findtext("title") == "Verbose"
+        )
+        self.assertGreater(len(catalog_verbose.findtext("description") or ""), 5000)

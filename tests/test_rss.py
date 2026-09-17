@@ -7,14 +7,20 @@ from unittest import TestCase
 
 from podclean.rss import (
     ATOM_NS,
+    DEFAULT_MAX_FEED_BYTES,
     DEFAULT_MAX_FEED_ITEMS,
+    DEFAULT_MAX_ITEM_DESCRIPTION_CHARS,
     ITUNES_NS,
     RssItem,
     audio_mime_type,
+    build_public_rss_xml,
     build_rss_xml,
+    clip_text,
     format_itunes_duration,
     limit_feed_items,
+    merge_missing_items,
     parse_rss_feed,
+    slim_item,
     sort_items_newest_first,
     upsert_item,
 )
@@ -440,6 +446,100 @@ class LimitFeedItemsTest(TestCase):
         ]
         xml = build_rss_xml(limit_feed_items(items), feed_url=FEED_URL)
         self.assertLess(len(xml), 512 * 1024)
+
+
+class PublicFeedBudgetTest(TestCase):
+    def test_clip_text_adds_ellipsis(self) -> None:
+        self.assertEqual(clip_text("hello", 10), "hello")
+        self.assertEqual(clip_text("hello world", 8), "hello w…")
+        self.assertIsNone(clip_text(None, 8))
+
+    def test_slim_item_clips_inherited_description(self) -> None:
+        item = RssItem(
+            title="Episode",
+            enclosure_url="https://example.com/ep.mp3",
+            enclosure_length="1",
+            pub_date="Wed, 16 Sep 2026 12:00:00 GMT",
+            description="x" * 4000,
+        )
+        slimmed = slim_item(item)
+        assert slimmed.description is not None
+        self.assertEqual(len(slimmed.description), DEFAULT_MAX_ITEM_DESCRIPTION_CHARS)
+        self.assertTrue(slimmed.description.endswith("…"))
+        self.assertEqual(item.description, "x" * 4000)
+
+    def test_merge_missing_items_does_not_overwrite_catalog_description(self) -> None:
+        catalog = [
+            RssItem(
+                title="Episode",
+                enclosure_url="https://example.com/ep.mp3",
+                enclosure_length="1",
+                pub_date="Wed, 16 Sep 2026 12:00:00 GMT",
+                description="full show notes",
+            )
+        ]
+        public = [
+            RssItem(
+                title="Episode",
+                enclosure_url="https://example.com/ep.mp3",
+                enclosure_length="1",
+                pub_date="Wed, 16 Sep 2026 12:00:00 GMT",
+                description="clipped…",
+            ),
+            RssItem(
+                title="Only In Public",
+                enclosure_url="https://example.com/public.mp3",
+                enclosure_length="1",
+                pub_date="Thu, 17 Sep 2026 12:00:00 GMT",
+            ),
+        ]
+        merged = merge_missing_items(catalog, public)
+        by_title = {item.title: item for item in merged}
+        self.assertEqual(by_title["Episode"].description, "full show notes")
+        self.assertIn("Only In Public", by_title)
+
+    def test_public_feed_clips_and_stays_under_byte_budget(self) -> None:
+        items = [
+            RssItem(
+                title=f"Episode {i:03d}",
+                enclosure_url=f"https://example.com/ep{i:03d}.mp3",
+                enclosure_length="1",
+                pub_date=f"Wed, {(i % 28) + 1:02d} Sep 2026 12:00:00 GMT",
+                description="SHOW NOTES " + ("transcript " * 400),
+            )
+            for i in range(40)
+        ]
+        published, xml = build_public_rss_xml(
+            items,
+            feed_url=FEED_URL,
+            max_items=40,
+            max_bytes=20_000,
+        )
+        self.assertLessEqual(len(xml), 20_000)
+        self.assertGreaterEqual(len(published), 1)
+        self.assertLess(len(published), 40)
+        for item in published:
+            assert item.description is not None
+            self.assertLessEqual(len(item.description), DEFAULT_MAX_ITEM_DESCRIPTION_CHARS)
+
+    def test_three_hundred_verbose_items_stay_under_default_byte_budget(self) -> None:
+        items = [
+            RssItem(
+                title=f"Cleaned Daily Episode {i:04d}",
+                enclosure_url=(
+                    "https://example-bucket.s3.us-east-1.amazonaws.com/"
+                    f"podclean/output/daily_episode_{i:04d}_clean.mp3"
+                ),
+                enclosure_length="45000000",
+                pub_date="Wed, 16 Sep 2026 12:00:00 GMT",
+                duration="1:05:23",
+                description="x" * 8000,
+            )
+            for i in range(DEFAULT_MAX_FEED_ITEMS)
+        ]
+        published, xml = build_public_rss_xml(items, feed_url=FEED_URL)
+        self.assertLessEqual(len(xml), DEFAULT_MAX_FEED_BYTES)
+        self.assertEqual(len(published), DEFAULT_MAX_FEED_ITEMS)
 
 
 class NonUtf8DeclarationTest(TestCase):

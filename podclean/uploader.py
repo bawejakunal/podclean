@@ -14,12 +14,14 @@ from .config import get_config
 from .rss import (
     DEFAULT_CHANNEL_DESCRIPTION,
     DEFAULT_CHANNEL_TITLE,
+    DEFAULT_MAX_FEED_BYTES,
     DEFAULT_MAX_FEED_ITEMS,
     RssItem,
     audio_mime_type,
+    build_public_rss_xml,
     build_rss_xml,
     format_itunes_duration,
-    limit_feed_items,
+    merge_missing_items,
     parse_rss_feed,
     upsert_item,
 )
@@ -86,6 +88,7 @@ def upload_to_s3(
             duration_seconds=duration_seconds,
             mime_type=audio_mime_type(file_path.name),
             max_items=config.rss_max_items,
+            max_bytes=config.rss_max_bytes,
         )
 
         return rss_url, file_url
@@ -109,6 +112,7 @@ def _update_rss_feed(
     duration_seconds: float | None = None,
     mime_type: str = "audio/mpeg",
     max_items: int | None = DEFAULT_MAX_FEED_ITEMS,
+    max_bytes: int | None = DEFAULT_MAX_FEED_BYTES,
 ) -> None:
     """Download the existing catalog, rewrite it with the new episode, and upload.
 
@@ -118,8 +122,9 @@ def _update_rss_feed(
 
     The uncapped catalog is stored next to the public feed (``rss-catalog.xml``)
     so omitted episodes can be republished if ``RSS_MAX_ITEMS`` is raised later.
-    Only the newest ``max_items`` episodes are written to the public ``rss.xml``.
-    Pass ``0`` or ``None`` to publish the full catalog.
+    The public ``rss.xml`` is written first and clipped to *max_items* plus a
+    *max_bytes* budget so Apple Podcasts and YouTube Music can fetch it quickly.
+    Pass ``0`` or ``None`` for *max_items*/*max_bytes* to skip that cap.
     """
     catalog_key = _catalog_key(rss_key)
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -140,7 +145,14 @@ def _update_rss_feed(
             description=title,
         )
         items = upsert_item(items, new_item)
-        published = limit_feed_items(items, max_items)
+        published, published_xml = build_public_rss_xml(
+            items,
+            feed_url=feed_url,
+            title=channel_title,
+            description=channel_description,
+            max_items=max_items,
+            max_bytes=max_bytes,
+        )
         omitted = len(items) - len(published)
         catalog_xml = build_rss_xml(
             items,
@@ -148,23 +160,13 @@ def _update_rss_feed(
             title=channel_title,
             description=channel_description,
         )
-        published_xml = (
-            catalog_xml
-            if omitted == 0
-            else build_rss_xml(
-                published,
-                feed_url=feed_url,
-                title=channel_title,
-                description=channel_description,
-            )
-        )
-        _put_rss_object(s3_client, bucket, catalog_key, catalog_xml, tmp_path)
         _put_rss_object(s3_client, bucket, rss_key, published_xml, tmp_path)
+        _put_catalog_object(s3_client, bucket, catalog_key, catalog_xml, tmp_path)
         if omitted:
             print(
                 f"RSS feed updated successfully ({len(published)} episodes, "
                 f"{len(published_xml)} bytes); omitted {omitted} older items "
-                f"(RSS_MAX_ITEMS={max_items})."
+                f"(RSS_MAX_ITEMS={max_items}, RSS_MAX_BYTES={max_bytes})."
             )
         else:
             print(
@@ -195,20 +197,41 @@ def _put_rss_object(
     s3_client.upload_file(tmp_path, bucket, key, ExtraArgs=_RSS_UPLOAD_ARGS)
 
 
+def _put_catalog_object(
+    s3_client, bucket: str, key: str, xml_bytes: bytes, tmp_path: str
+) -> None:
+    """Write the uncapped catalog; a permission error must not block rss.xml."""
+    try:
+        _put_rss_object(s3_client, bucket, key, xml_bytes, tmp_path)
+    except ClientError as exc:
+        print(
+            f"Warning: could not write {key}: {exc}. "
+            "Public rss.xml was still updated. Grant s3:PutObject on that key "
+            "(or the podclean/output/ prefix) to keep a restorable full catalog."
+        )
+
+
 def _load_existing_feed(
     s3_client, bucket: str, rss_key: str, tmp_path: str
 ) -> tuple[str, str, list[RssItem]]:
-    """Return channel metadata and items from the catalog, or the public feed.
+    """Return channel metadata and items from the catalog merged with the public feed.
 
     Prefers ``rss-catalog.xml`` so a later raise of ``RSS_MAX_ITEMS`` can
     republish episodes that were omitted from the player-facing feed.
-    Falls back to ``rss.xml`` so existing single-file buckets still upgrade.
+    Public-only episodes are merged in so a failed catalog write cannot drop
+    items that already made it into ``rss.xml``.
     """
-    for key in (_catalog_key(rss_key), rss_key):
-        loaded = _try_load_feed(s3_client, bucket, key, tmp_path)
-        if loaded is not None:
-            return loaded
-    return DEFAULT_CHANNEL_TITLE, DEFAULT_CHANNEL_DESCRIPTION, []
+    catalog = _try_load_feed(s3_client, bucket, _catalog_key(rss_key), tmp_path)
+    public = _try_load_feed(s3_client, bucket, rss_key, tmp_path)
+    if catalog is None and public is None:
+        return DEFAULT_CHANNEL_TITLE, DEFAULT_CHANNEL_DESCRIPTION, []
+    if catalog is None:
+        return public
+    if public is None:
+        return catalog
+    title, description, items = catalog
+    _, _, public_items = public
+    return title, description, merge_missing_items(items, public_items)
 
 
 def _try_load_feed(
