@@ -194,6 +194,86 @@ class ParseAndUpgradeTest(TestCase):
         self.assertEqual(updated[0].title, "Reprocessed")
         self.assertEqual(updated[0].enclosure_length, "2")
 
+    def test_upsert_collapses_duplicate_existing_items_by_enclosure_url(self) -> None:
+        """Multiple existing items with the same enclosure URL are collapsed."""
+        items = [
+            RssItem(
+                title="First Duplicate",
+                enclosure_url="https://example.com/dup.mp3",
+                enclosure_length="1",
+                pub_date="Mon, 14 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Unique",
+                enclosure_url="https://example.com/unique.mp3",
+                enclosure_length="2",
+                pub_date="Tue, 15 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Second Duplicate",
+                enclosure_url="https://example.com/dup.mp3",
+                enclosure_length="3",
+                pub_date="Wed, 16 Sep 2026 00:00:00 GMT",
+            ),
+        ]
+        updated = upsert_item(
+            items,
+            RssItem(
+                title="Replacement",
+                enclosure_url="https://example.com/dup.mp3",
+                enclosure_length="4",
+                pub_date="Thu, 17 Sep 2026 00:00:00 GMT",
+            ),
+        )
+        self.assertEqual(len(updated), 2)
+        titles = [item.title for item in updated]
+        self.assertIn("Replacement", titles)
+        self.assertIn("Unique", titles)
+        self.assertNotIn("First Duplicate", titles)
+        self.assertNotIn("Second Duplicate", titles)
+
+    def test_upsert_collapses_duplicate_existing_items_by_guid(self) -> None:
+        """Multiple existing items with the same GUID are collapsed."""
+        items = [
+            RssItem(
+                title="First Duplicate",
+                enclosure_url="https://example.com/a.mp3",
+                enclosure_length="1",
+                pub_date="Mon, 14 Sep 2026 00:00:00 GMT",
+                guid="shared-guid-123",
+            ),
+            RssItem(
+                title="Unique",
+                enclosure_url="https://example.com/unique.mp3",
+                enclosure_length="2",
+                pub_date="Tue, 15 Sep 2026 00:00:00 GMT",
+                guid="unique-guid",
+            ),
+            RssItem(
+                title="Second Duplicate",
+                enclosure_url="https://example.com/b.mp3",
+                enclosure_length="3",
+                pub_date="Wed, 16 Sep 2026 00:00:00 GMT",
+                guid="shared-guid-123",
+            ),
+        ]
+        updated = upsert_item(
+            items,
+            RssItem(
+                title="Replacement",
+                enclosure_url="https://example.com/new.mp3",
+                enclosure_length="4",
+                pub_date="Thu, 17 Sep 2026 00:00:00 GMT",
+                guid="shared-guid-123",
+            ),
+        )
+        self.assertEqual(len(updated), 2)
+        titles = [item.title for item in updated]
+        self.assertIn("Replacement", titles)
+        self.assertIn("Unique", titles)
+        self.assertNotIn("First Duplicate", titles)
+        self.assertNotIn("Second Duplicate", titles)
+
 
 class OrderingTest(TestCase):
     def test_sort_newest_first_handles_rfc822_variants(self) -> None:
