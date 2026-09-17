@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .rss import DEFAULT_MAX_FEED_BYTES, DEFAULT_MAX_FEED_ITEMS
+from podclean.rss import DEFAULT_MAX_FEED_BYTES, DEFAULT_MAX_FEED_ITEMS
 
 # Load .env file from project root or current directory
 _env_paths = [
