@@ -14,10 +14,12 @@ from .config import get_config
 from .rss import (
     DEFAULT_CHANNEL_DESCRIPTION,
     DEFAULT_CHANNEL_TITLE,
+    DEFAULT_MAX_FEED_ITEMS,
     RssItem,
     audio_mime_type,
     build_rss_xml,
     format_itunes_duration,
+    limit_feed_items,
     parse_rss_feed,
     upsert_item,
 )
@@ -83,6 +85,7 @@ def upload_to_s3(
             feed_url=rss_url,
             duration_seconds=duration_seconds,
             mime_type=audio_mime_type(file_path.name),
+            max_items=config.rss_max_items,
         )
 
         return rss_url, file_url
@@ -105,12 +108,17 @@ def _update_rss_feed(
     feed_url: str,
     duration_seconds: float | None = None,
     mime_type: str = "audio/mpeg",
+    max_items: int | None = DEFAULT_MAX_FEED_ITEMS,
 ) -> None:
     """Download the existing RSS feed, rewrite it with the new episode, and upload.
 
     Existing sparse feeds are upgraded in place: items are reordered newest-first,
     missing GUIDs are filled from enclosure URLs, and podcast/iTunes metadata is
     added. Channel ``<link>`` is set to the feed URL rather than an audio file.
+
+    Only the newest ``max_items`` episodes are written back to S3 so the XML
+    stays small enough for Apple Podcasts and YouTube Music to fetch quickly.
+    Pass ``0`` or ``None`` to keep the full catalog.
     """
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         tmp_path = tmp.name
@@ -130,8 +138,10 @@ def _update_rss_feed(
             description=title,
         )
         items = upsert_item(items, new_item)
+        published = limit_feed_items(items, max_items)
+        omitted = len(items) - len(published)
         xml_bytes = build_rss_xml(
-            items,
+            published,
             feed_url=feed_url,
             title=channel_title,
             description=channel_description,
@@ -147,7 +157,17 @@ def _update_rss_feed(
                 "CacheControl": "max-age=0, must-revalidate",
             },
         )
-        print("RSS feed updated successfully.")
+        if omitted:
+            print(
+                f"RSS feed updated successfully ({len(published)} episodes, "
+                f"{len(xml_bytes)} bytes); omitted {omitted} older items "
+                f"(RSS_MAX_ITEMS={max_items})."
+            )
+        else:
+            print(
+                f"RSS feed updated successfully "
+                f"({len(published)} episodes, {len(xml_bytes)} bytes)."
+            )
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

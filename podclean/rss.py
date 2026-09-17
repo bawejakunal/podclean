@@ -24,6 +24,9 @@ DEFAULT_CHANNEL_DESCRIPTION: Final = "Automated ad-free podcast episodes"
 DEFAULT_CHANNEL_AUTHOR: Final = "PodClean"
 DEFAULT_LANGUAGE: Final = "en"
 DEFAULT_ITUNES_CATEGORY: Final = "Education"
+# Newest-first window published in rss.xml. 300 lean items stay well under
+# the ~512 KiB size where many aggregators start timing out or throttling.
+DEFAULT_MAX_FEED_ITEMS: Final = 300
 
 _AUDIO_MIME_TYPES: Final = {
     ".mp3": "audio/mpeg",
@@ -145,6 +148,23 @@ def upsert_item(items: Sequence[RssItem], new_item: RssItem) -> list[RssItem]:
     if not replaced:
         merged.append(new_item)
     return sort_items_newest_first(merged)
+
+
+def limit_feed_items(
+    items: Sequence[RssItem], max_items: int | None = DEFAULT_MAX_FEED_ITEMS
+) -> list[RssItem]:
+    """Return the newest *max_items* episodes for the public RSS document.
+
+    The S3 object is a single XML file. Players such as Apple Podcasts
+    (iTunes) and YouTube Music download that whole document on each poll,
+    so an unbounded catalog eventually times out. ``max_items`` of ``None``
+    or a non-positive value disables the cap. Audio objects already in S3
+    are not deleted when they fall out of the feed.
+    """
+    ordered = sort_items_newest_first(items)
+    if max_items is None or max_items <= 0:
+        return ordered
+    return ordered[:max_items]
 
 
 def sort_items_newest_first(items: Sequence[RssItem]) -> list[RssItem]:

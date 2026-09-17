@@ -7,11 +7,13 @@ from unittest import TestCase
 
 from podclean.rss import (
     ATOM_NS,
+    DEFAULT_MAX_FEED_ITEMS,
     ITUNES_NS,
     RssItem,
     audio_mime_type,
     build_rss_xml,
     format_itunes_duration,
+    limit_feed_items,
     parse_rss_feed,
     sort_items_newest_first,
     upsert_item,
@@ -388,6 +390,56 @@ class OrderingTest(TestCase):
         merged = upsert_item([existing], new)
         self.assertEqual(len(merged), 2)
         self.assertEqual([item.title for item in merged], ["New", "Existing"])
+
+
+class LimitFeedItemsTest(TestCase):
+    def _dated_item(self, title: str, day: int) -> RssItem:
+        return RssItem(
+            title=title,
+            enclosure_url=f"https://example.com/{title}.mp3",
+            enclosure_length="1",
+            pub_date=f"Wed, {day:02d} Sep 2026 12:00:00 GMT",
+        )
+
+    def test_keeps_newest_items_only(self) -> None:
+        items = [
+            self._dated_item("old", 1),
+            self._dated_item("mid", 10),
+            self._dated_item("new", 17),
+        ]
+        limited = limit_feed_items(items, 2)
+        self.assertEqual([item.title for item in limited], ["new", "mid"])
+
+    def test_unlimited_when_max_is_zero_or_none(self) -> None:
+        items = [self._dated_item("a", 1), self._dated_item("b", 2)]
+        self.assertEqual(len(limit_feed_items(items, 0)), 2)
+        self.assertEqual(len(limit_feed_items(items, None)), 2)
+        self.assertEqual(len(limit_feed_items(items, -1)), 2)
+
+    def test_default_cap_is_three_hundred(self) -> None:
+        items = [
+            self._dated_item(f"ep{i}", (i % 28) + 1) for i in range(DEFAULT_MAX_FEED_ITEMS + 25)
+        ]
+        limited = limit_feed_items(items)
+        self.assertEqual(len(limited), DEFAULT_MAX_FEED_ITEMS)
+
+    def test_three_hundred_lean_items_stay_under_timeout_threshold(self) -> None:
+        """A 300-episode PodClean feed should stay under the 512 KiB guideline."""
+        items = [
+            RssItem(
+                title=f"Cleaned Daily Episode {i:04d}",
+                enclosure_url=(
+                    "https://example-bucket.s3.us-east-1.amazonaws.com/"
+                    f"podclean/output/daily_episode_{i:04d}_clean.mp3"
+                ),
+                enclosure_length="45000000",
+                pub_date="Wed, 16 Sep 2026 12:00:00 GMT",
+                duration="1:05:23",
+            )
+            for i in range(DEFAULT_MAX_FEED_ITEMS)
+        ]
+        xml = build_rss_xml(limit_feed_items(items), feed_url=FEED_URL)
+        self.assertLess(len(xml), 512 * 1024)
 
 
 class NonUtf8DeclarationTest(TestCase):

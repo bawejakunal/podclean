@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .rss import DEFAULT_MAX_FEED_ITEMS
+
 # Load .env file from project root or current directory
 _env_paths = [
     Path.cwd() / ".env",
@@ -56,6 +58,8 @@ class Config:
     aws_secret_access_key: str = ""
     aws_bucket_name: str = ""
     aws_region_name: str = "us-east-1"
+    # Newest episodes kept in the public S3 RSS file. 0 = unlimited.
+    rss_max_items: int = DEFAULT_MAX_FEED_ITEMS
     
     resend_api_key: str = ""
     resend_from_email: str = ""
@@ -83,6 +87,13 @@ class Config:
         self.aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", self.aws_secret_access_key)
         self.aws_bucket_name = os.getenv("AWS_BUCKET_NAME", self.aws_bucket_name)
         self.aws_region_name = os.getenv("AWS_REGION_NAME", self.aws_region_name)
+
+        rss_max_items_env = os.getenv("RSS_MAX_ITEMS")
+        if rss_max_items_env is not None and rss_max_items_env.strip() != "":
+            try:
+                self.rss_max_items = int(rss_max_items_env)
+            except ValueError:
+                pass
         
         self.resend_api_key = os.getenv("RESEND_API_KEY", self.resend_api_key)
         self.resend_from_email = os.getenv("RESEND_FROM_EMAIL", self.resend_from_email)

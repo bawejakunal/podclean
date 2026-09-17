@@ -8,8 +8,9 @@ from unittest import TestCase
 
 from botocore.exceptions import ClientError
 
+from podclean.rss import RssItem, build_rss_xml
 from podclean.uploader import _update_rss_feed
-from tests.test_rss import LEGACY_FEED
+from tests.test_rss import FEED_URL, LEGACY_FEED
 
 
 class FakeS3:
@@ -92,3 +93,80 @@ class UpdateRssFeedTest(TestCase):
             enclosure = item.find("enclosure")
             assert guid is not None and enclosure is not None
             self.assertEqual(guid.text, enclosure.get("url"))
+
+    def test_caps_published_feed_to_newest_items(self) -> None:
+        existing = [
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Middle",
+                enclosure_url="https://example.com/podclean/output/middle.mp3",
+                enclosure_length="2",
+                pub_date="Sat, 01 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Newest",
+                enclosure_url="https://example.com/podclean/output/newest.mp3",
+                enclosure_length="3",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+            ),
+        ]
+        s3 = FakeS3(
+            {
+                "podclean/output/rss.xml": build_rss_xml(
+                    existing, feed_url=FEED_URL
+                )
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            "podclean/output/rss.xml",
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            duration_seconds=45,
+            max_items=2,
+        )
+        xml = s3.objects["podclean/output/rss.xml"]
+        channel = ET.fromstring(xml).find("channel")
+        assert channel is not None
+        titles = [item.findtext("title") for item in channel.findall("item")]
+        self.assertEqual(titles, ["Brand New", "Newest"])
+
+    def test_zero_max_items_keeps_full_catalog(self) -> None:
+        existing = [
+            RssItem(
+                title=f"Episode {i}",
+                enclosure_url=f"https://example.com/podclean/output/ep{i}.mp3",
+                enclosure_length="1",
+                pub_date=f"Mon, {i:02d} Sep 2026 00:00:00 GMT",
+            )
+            for i in range(1, 5)
+        ]
+        s3 = FakeS3(
+            {
+                "podclean/output/rss.xml": build_rss_xml(
+                    existing, feed_url=FEED_URL
+                )
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            "podclean/output/rss.xml",
+            "https://example.com/podclean/output/ep5.mp3",
+            5,
+            "Episode 5",
+            feed_url=FEED_URL,
+            max_items=0,
+        )
+        xml = s3.objects["podclean/output/rss.xml"]
+        channel = ET.fromstring(xml).find("channel")
+        assert channel is not None
+        self.assertEqual(len(channel.findall("item")), 5)
