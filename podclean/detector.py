@@ -32,8 +32,8 @@ identify every advertisement, sponsorship, or promotional segment.
 
 A product or service ad read is a **contiguous commercial pitch**, usually
 30–180 seconds (often 60–120 for host-reads). It is not a single brand-name
-utterance. Conversational interview podcasts (The Knowledge Project,
-Megaphone mid-rolls, and similar) use full host-reads; mark the entire pitch.
+utterance. Conversational and interview-style shows in particular run long
+host-reads rather than short drop-ins; mark the entire pitch.
 
 Typical host-read structure:
 1. **Transition / bookend in** — "we'll be right back", "quick break",
@@ -47,8 +47,8 @@ Typical host-read structure:
 4. **Product pitch** — features, benefits, who it is for, how the host uses
    it, social proof.
 5. **Offer / CTA** — discount, free trial, "go to …", "visit … slash …",
-   spelled-out URLs ("heygen dot com slash knowledge"), promo codes
-   ("use code KNOWLEDGE"), "link in the show notes".
+   spelled-out URLs ("<brand> dot com slash <show>"), promo codes
+   ("use code <SHOW>"), "link in the show notes".
 6. **Transition / bookend out** — "okay, back to the conversation",
    "now back to my chat with…", "thanks again to …", "let's get back to it".
 
@@ -66,9 +66,9 @@ where the brand first appears. Example shape (illustrative):
 [12:12] if you've been looking for a simpler way to keep your home clean
 [12:20] Acme's new robot vacuum maps your floor and empties itself
 [12:35] I've been using it for months and it's honestly been a game changer
-[12:48] listeners get twenty percent off at acme dot com slash knowledge
-[12:55] use code KNOWLEDGE for that deal
-[13:02] okay, thanks Acme — now back to my conversation with Tobi
+[12:48] listeners get twenty percent off at acme dot com slash podcast
+[12:55] use code PODCAST for that deal
+[13:02] okay, thanks Acme — now back to my conversation with my guest
 [13:08] so you were saying about decision making…
 ```
 
@@ -90,11 +90,12 @@ Categories to detect:
 1. **Host-read sponsor messages** — full product/service pitches.
 2. **Pre-roll / post-roll ads**.
 3. **Mid-roll ad breaks**.
-4. **Self-promotion** — newsletter, Patreon, merch store, host's
-   book/course/tour, "my new book", ticket links. Include the full plug,
-   not just the title mentioned inside interview discussion. Watch for
-   "Daily Stoic store", "dailystoic.com/…", "Ryan Holiday", book
-   promotions, and medallion/coin/journal promotions.
+4. **Self-promotion** — newsletter sign-ups, membership or subscription
+   platforms, merch store, the host's book/course/tour, "my new book",
+   event ticket links. Include the full plug, not just the title
+   mentioned inside interview discussion. Watch for the show's own store
+   or website ("<show> dot com slash store") and branded physical
+   merchandise.
 5. **Transition phrases** that bookend ads — include them in the region.
 
 Lexical / transcript cues (Whisper output is messy — still count these):
@@ -111,7 +112,7 @@ Lexical / transcript cues (Whisper output is messy — still count these):
 
 What is NOT an ad:
 - Guest mentioning a company as part of the interview ("when I was at
-  Shopify…").
+  my last company…", "we built that on top of their API").
 - Host naming a product once without pitch or CTA.
 - Brief thanks without a commercial block.
 - Discussion of advertising or business models as an interview topic.
@@ -138,7 +139,7 @@ Output:
     "start"              – float, start time in total seconds
     "end"                – float, end time in total seconds
     "confidence"         – float 0.0–1.0, how confident you are this is an ad
-    "reason"             – string, short description (e.g. "Sponsor read for BetterHelp")
+    "reason"             – string, short description (e.g. "Host-read sponsor block for <brand>")
     "transcript_excerpt" – string, a short verbatim excerpt (≤80 chars)
 - If there are NO ads, return an empty array: []
 """
@@ -154,14 +155,14 @@ Goals:
    short (about 1–5s, or well under ~20–30s). Grow them to the full
    contiguous pitch: bookend in → intro → problem → features → CTA →
    bookend out. Typical host-reads are 45–120s+ (often 60–120).
-3. **Recover missed full reads**, especially conversational interview-
-   podcast host-reads (Knowledge Project / Megaphone style) that look like
-   a long commercial block rather than a short cue phrase.
+3. **Recover missed full reads**, especially long conversational host-reads
+   that read as a sustained commercial block rather than a short cue
+   phrase.
 4. **Reject collapsing multiple distinct mid-rolls into one tiny window.**
-   If several brands are jammed into a 1–5s span (or a combined `reason`
-   lists Apple Oven, Matic Vacuum, HeyGen, Element, etc.), split them
-   into full-length regions — or one merged region covering the whole
-   break if they share the same bookends. Never keep a 2-second stub.
+   If several brands are jammed into a short time span (or a combined
+   `reason` lists several different sponsors), split them into
+   full-length regions — or one merged region covering the whole break if
+   they share the same bookends. Never keep a 2-second stub.
 5. Adjust start/end if they are slightly off. Include bookend transitions.
    Prefer slightly wider boundaries over cutting mid-sentence.
 
@@ -175,9 +176,9 @@ Timestamps:
   17–19 just because the transcript shows [17:…].
 - Host-read ads are almost never 1–5 seconds when confidence is high.
 
-What is NOT an ad: interview namedrops ("when I was at Shopify…"), a
-one-off product mention without pitch/CTA, brief thanks without a
-commercial block, or discussion of advertising as a topic.
+What is NOT an ad: interview namedrops ("when I was at my last
+company…"), a one-off product mention without pitch/CTA, brief thanks
+without a commercial block, or discussion of advertising as a topic.
 
 Return a JSON array of the final, corrected ad regions using the same
 schema:

@@ -5,9 +5,9 @@ from __future__ import annotations
 from unittest import TestCase
 
 from podclean.detector import (
-    AdDetector,
     _DETECTION_SYSTEM_PROMPT,
     _VERIFICATION_SYSTEM_PROMPT,
+    AdDetector,
     timestamp_label_to_seconds,
 )
 from podclean.models import TranscriptSegment
@@ -79,6 +79,36 @@ def _collapsed(text: str) -> str:
     return " ".join(text.split())
 
 
+# Real shows, hosts, and sponsor brands must stay out of the prompts so the
+# CLI generalizes across podcasts instead of biasing Gemini toward a few.
+NAMED_ENTITIES = (
+    "Knowledge Project",
+    "Megaphone",
+    "Daily Stoic",
+    "dailystoic",
+    "Ryan Holiday",
+    "Tobi",
+    "Shopify",
+    "HeyGen",
+    "heygen",
+    "Matic",
+    "Apple Oven",
+    "BetterHelp",
+    "Patreon",
+)
+
+
+class PromptsAreShowAgnosticTest(TestCase):
+    def test_no_real_show_host_or_sponsor_names(self) -> None:
+        for name, prompt in (
+            ("detection", _DETECTION_SYSTEM_PROMPT),
+            ("verification", _VERIFICATION_SYSTEM_PROMPT),
+        ):
+            for entity in NAMED_ENTITIES:
+                with self.subTest(prompt=name, entity=entity):
+                    self.assertNotIn(entity, prompt)
+
+
 class DetectionPromptGuidanceTest(TestCase):
     def test_teaches_full_host_read_span_not_brand_stubs(self) -> None:
         prompt = _collapsed(_DETECTION_SYSTEM_PROMPT)
@@ -91,14 +121,13 @@ class DetectionPromptGuidanceTest(TestCase):
             "dot com",
             "back to the conversation",
             "when I was at",
-            "Shopify",
             "at least ~20–30s",
             "45–120s+",
             "Do not collapse four sponsors",
             "total seconds",
             "[MM:SS]",
             "Acme Widgets",
-            "Daily Stoic store",
+            "merch store",
             "transcript_excerpt",
             "Return ONLY a JSON array",
         )
@@ -120,10 +149,10 @@ class VerificationPromptGuidanceTest(TestCase):
             "Expand stub regions",
             "Recover missed full reads",
             "Reject collapsing multiple distinct mid-rolls into one tiny window",
-            "Knowledge Project",
+            "jammed into a short time span",
+            "several different sponsors",
             "total seconds",
             "[17:42] → 1062, not 17",
-            "Apple Oven",
             "2-second stub",
             "transcript_excerpt",
             "Return ONLY",
