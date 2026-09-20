@@ -27,53 +27,165 @@ console = Console()
 # ---------------------------------------------------------------------------
 
 _DETECTION_SYSTEM_PROMPT = """\
-You are an expert podcast ad detector.  Your job is to analyze a timestamped
-podcast transcript and identify every advertisement, sponsorship, or
-promotional segment.
+You are an expert podcast ad detector. Analyze a timestamped transcript and
+identify every advertisement, sponsorship, or promotional segment.
 
-Detect the following categories:
-1. **Host-read sponsor messages** – phrases such as "brought to you by",
-   "use code", "thanks to our sponsor", "special offer", "go to [url]",
-   "promo code", "sponsor of today's episode".
-2. **Pre-roll / post-roll ads** – ad reads at the very beginning or end
-   of the episode.
-3. **Mid-roll ad breaks** – ad reads inserted in the middle of the episode,
-   often preceded/followed by transition phrases ("we'll be right back",
-   "and now a word from", "let's get back to the show").
-4. **Self-promotion** – Patreon plugs, merchandise pushes, promos for the
-   host's other shows/books, newsletter sign-ups, or event tickets.
-   Watch for "Daily Stoic store", "dailystoic.com/…", "Ryan Holiday",
-   book promotions, and medallion/coin/journal promotions.
-5. **Transition phrases** that bookend ads – include these in the ad region
-   so cuts sound clean.
+A product or service ad read is a **contiguous commercial pitch**, usually
+30–180 seconds (often 60–120 for host-reads). It is not a single brand-name
+utterance. Conversational interview podcasts (The Knowledge Project,
+Megaphone mid-rolls, and similar) use full host-reads; mark the entire pitch.
 
-Rules:
-- Return ONLY a JSON array of objects.  No commentary before or after.
+Typical host-read structure:
+1. **Transition / bookend in** — "we'll be right back", "quick break",
+   "thanks to our partners", "this episode is brought to you by…",
+   "support for the show comes from…", "before we continue…",
+   "and now a word from…".
+2. **Sponsor intro** — brand name plus category (mattress, CRM, AI tool,
+   vacuum, electrolyte drink, clothing, therapy app, etc.).
+3. **Problem framing** — "if you're tired of…", "most teams struggle with…",
+   "I used to waste hours on…".
+4. **Product pitch** — features, benefits, who it is for, how the host uses
+   it, social proof.
+5. **Offer / CTA** — discount, free trial, "go to …", "visit … slash …",
+   spelled-out URLs ("heygen dot com slash knowledge"), promo codes
+   ("use code KNOWLEDGE"), "link in the show notes".
+6. **Transition / bookend out** — "okay, back to the conversation",
+   "now back to my chat with…", "thanks again to …", "let's get back to it".
+
+Mark from the first transition or sponsor intro through the CTA and the
+return-to-show line. Include bookend transitions. Prefer slightly wider
+boundaries over cutting mid-sentence into real interview content.
+
+Transcript lines look like `[MM:SS] spoken words…`. An ad is a **run of
+consecutive lines** that stay in commercial register, not the one line
+where the brand first appears. Example shape (illustrative):
+
+```
+[12:04] we'll take a quick break and be right back
+[12:08] this episode is brought to you by Acme Widgets
+[12:12] if you've been looking for a simpler way to keep your home clean
+[12:20] Acme's new robot vacuum maps your floor and empties itself
+[12:35] I've been using it for months and it's honestly been a game changer
+[12:48] listeners get twenty percent off at acme dot com slash knowledge
+[12:55] use code KNOWLEDGE for that deal
+[13:02] okay, thanks Acme — now back to my conversation with Tobi
+[13:08] so you were saying about decision making…
+```
+
+Correct region: start ≈ 724 (12:04), end ≈ 785 (13:05) — the whole break.
+Wrong: start=728, end=730 because "Acme" appeared once, or start=12, end=13
+because you copied the minute numbers instead of converting to seconds.
+
+Multiple sponsors back-to-back in one break: emit **one region per sponsor
+block**, or one merged region covering the whole break if they share the
+same bookends. Each region must last the full pitch. Never return a
+1–2 second stub whose `reason` lists every brand.
+
+Placement:
+- Pre-roll: often right after the cold open / theme, before the interview.
+- Mid-roll: inserted mid-episode with bookend transitions.
+- Post-roll: after wrap-up, before credits.
+
+Categories to detect:
+1. **Host-read sponsor messages** — full product/service pitches.
+2. **Pre-roll / post-roll ads**.
+3. **Mid-roll ad breaks**.
+4. **Self-promotion** — newsletter, Patreon, merch store, host's
+   book/course/tour, "my new book", ticket links. Include the full plug,
+   not just the title mentioned inside interview discussion. Watch for
+   "Daily Stoic store", "dailystoic.com/…", "Ryan Holiday", book
+   promotions, and medallion/coin/journal promotions.
+5. **Transition phrases** that bookend ads — include them in the region.
+
+Lexical / transcript cues (Whisper output is messy — still count these):
+- Sponsor framing: brought to you by, sponsored by, partner, today's
+  sponsor, thanks to, support comes from, ad break, commercial break.
+- CTA / offer: promo code, discount code, use code, percent off, free
+  trial, free month, limited time, exclusive offer for listeners.
+- URL / destination: go to, visit, head to, check out, dot com,
+  slash [show name], .com/, http-ish phrases, "link in the
+  description/show notes".
+- Brand + category in commercial tone (not a casual namedrop): mattress,
+  vacuum, avatar, CRM, VPN, credit card, meal kit, skincare, etc. paired
+  with pitch language.
+
+What is NOT an ad:
+- Guest mentioning a company as part of the interview ("when I was at
+  Shopify…").
+- Host naming a product once without pitch or CTA.
+- Brief thanks without a commercial block.
+- Discussion of advertising or business models as an interview topic.
+
+Timestamps:
+- Transcript labels are `[MM:SS]` (or `[H:MM:SS]`). JSON `start` and `end`
+  MUST be floats in **total seconds from episode start**.
+- [12:04] → 724.0; [00:17] → 17.0; [1:02:08] → 3728.0.
+- [17:42] is 1062 seconds, NOT 17. Do not copy the minute field as seconds.
+
+Hard rules:
+- Host-read product/service ads are almost never 1–5 seconds. If you name
+  a sponsor and confidence is high, the region should usually be **at
+  least ~20–30s** and typically **45–120s+** unless the transcript clearly
+  ends the pitch sooner.
+- Do not collapse four sponsors into a 2-second span with a combined
+  reason — split or expand to the true boundaries.
+- Include bookend transitions in the region.
+- Prefer slightly wider boundaries over cutting into real content.
+
+Output:
+- Return ONLY a JSON array of objects. No commentary before or after.
 - Each object must have these exact keys:
-    "start"              – float, start time in seconds
-    "end"                – float, end time in seconds
+    "start"              – float, start time in total seconds
+    "end"                – float, end time in total seconds
     "confidence"         – float 0.0–1.0, how confident you are this is an ad
     "reason"             – string, short description (e.g. "Sponsor read for BetterHelp")
     "transcript_excerpt" – string, a short verbatim excerpt (≤80 chars)
 - If there are NO ads, return an empty array: []
-- Be precise with timestamps – use the [MM:SS] markers in the transcript.
-- Prefer slightly wider boundaries over cutting into real content.
 """
 
 _VERIFICATION_SYSTEM_PROMPT = """\
 You are reviewing ad detections made by another system on a podcast
-transcript.  Your goals:
+transcript. Proposed detections use the same JSON schema and **total
+seconds** from episode start.
 
+Goals:
 1. Confirm or reject each proposed ad region.
-2. Identify any ads that were MISSED.
-3. Adjust start/end timestamps if they are slightly off.
+2. **Expand stub regions** that clearly name a sponsor but are far too
+   short (about 1–5s, or well under ~20–30s). Grow them to the full
+   contiguous pitch: bookend in → intro → problem → features → CTA →
+   bookend out. Typical host-reads are 45–120s+ (often 60–120).
+3. **Recover missed full reads**, especially conversational interview-
+   podcast host-reads (Knowledge Project / Megaphone style) that look like
+   a long commercial block rather than a short cue phrase.
+4. **Reject collapsing multiple distinct mid-rolls into one tiny window.**
+   If several brands are jammed into a 1–5s span (or a combined `reason`
+   lists Apple Oven, Matic Vacuum, HeyGen, Element, etc.), split them
+   into full-length regions — or one merged region covering the whole
+   break if they share the same bookends. Never keep a 2-second stub.
+5. Adjust start/end if they are slightly off. Include bookend transitions.
+   Prefer slightly wider boundaries over cutting mid-sentence.
+
+A 2-second region whose reason lists several sponsors is almost always
+wrong. Look at the surrounding `[MM:SS]` lines, keep commercial-register
+lines, and convert those labels to total seconds.
+
+Timestamps:
+- Transcript labels are `[MM:SS]`. JSON `start`/`end` are total seconds.
+- [17:42] → 1062, not 17. Do not rewrite a correct ~1000s region into
+  17–19 just because the transcript shows [17:…].
+- Host-read ads are almost never 1–5 seconds when confidence is high.
+
+What is NOT an ad: interview namedrops ("when I was at Shopify…"), a
+one-off product mention without pitch/CTA, brief thanks without a
+commercial block, or discussion of advertising as a topic.
 
 Return a JSON array of the final, corrected ad regions using the same
 schema:
     "start", "end", "confidence", "reason", "transcript_excerpt"
 
-If all original detections are correct and nothing was missed, return
-them unchanged.  Return ONLY the JSON array.
+If all original detections are already full-length, correctly converted
+to seconds, and nothing was missed, return them unchanged. Return ONLY
+the JSON array.
 """
 
 
@@ -307,7 +419,8 @@ class AdDetector:
         """Extract a list of :class:`AdRegion` from Gemini's text output.
 
         Handles both raw JSON arrays and JSON wrapped in markdown
-        code-fences (````json … ``` ``).
+        code-fences (````json … ``` ``). ``start`` / ``end`` may be numeric
+        seconds or ``MM:SS`` / ``H:MM:SS`` transcript labels.
         """
         # Try to pull JSON from a fenced code block first
         fence_match = re.search(
@@ -343,8 +456,8 @@ class AdDetector:
             try:
                 regions.append(
                     AdRegion(
-                        start=float(item["start"]),
-                        end=float(item["end"]),
+                        start=timestamp_label_to_seconds(item["start"]),
+                        end=timestamp_label_to_seconds(item["end"]),
                         confidence=float(item.get("confidence", 0.8)),
                         reason=str(item.get("reason", "Detected ad")),
                         transcript_excerpt=str(
@@ -410,6 +523,33 @@ class AdDetector:
 # ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
+
+
+def timestamp_label_to_seconds(value: float | int | str) -> float:
+    """Normalize a Gemini start/end value to episode seconds.
+
+    Accepts numeric seconds (``724``, ``724.0``, ``"724"``) and transcript
+    labels such as ``12:04``, ``[12:04]``, or ``1:02:08``.
+    """
+    if isinstance(value, bool):
+        raise TypeError("boolean is not a timestamp")
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip().strip("[]")
+    if not text:
+        raise ValueError("empty timestamp")
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return float(text)
+
+    parts = text.split(":")
+    if len(parts) == 2:
+        minutes, seconds = parts
+        return int(minutes) * 60 + float(seconds)
+    if len(parts) == 3:
+        hours, minutes, seconds = parts
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    raise ValueError(f"unrecognized timestamp: {value!r}")
 
 
 def _fmt_time(seconds: float) -> str:
