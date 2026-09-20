@@ -2,19 +2,39 @@
 
 from __future__ import annotations
 
+import io
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from unittest import TestCase
+from unittest import TestCase, mock
 
 from botocore.exceptions import ClientError
 
-from podclean.uploader import _update_rss_feed
-from tests.test_rss import LEGACY_FEED
+from podclean.rss import RssItem, build_rss_xml
+from podclean.uploader import _catalog_key, _update_rss_feed
+from tests.test_rss import FEED_URL, LEGACY_FEED
+
+RSS_KEY = "podclean/output/rss.xml"
+CATALOG_KEY = "podclean/output/rss-catalog.xml"
+
+
+def _channel_items(xml: bytes) -> list[ET.Element]:
+    channel = ET.fromstring(xml).find("channel")
+    assert channel is not None
+    return channel.findall("item")
+
+
+def _item_titles(xml: bytes) -> list[str | None]:
+    return [item.findtext("title") for item in _channel_items(xml)]
 
 
 class FakeS3:
-    def __init__(self, objects: dict[str, bytes] | None = None) -> None:
+    def __init__(
+        self,
+        objects: dict[str, bytes] | None = None,
+        deny_keys: set[str] | None = None,
+    ) -> None:
         self.objects = dict(objects or {})
+        self.deny_keys = set(deny_keys or [])
         self.uploads: list[tuple[str, bytes, dict | None]] = []
 
     def download_file(self, bucket: str, key: str, filename: str) -> None:
@@ -29,6 +49,11 @@ class FakeS3:
         key: str,
         ExtraArgs: dict | None = None,
     ) -> None:
+        if key in self.deny_keys:
+            raise ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+                "PutObject",
+            )
         data = Path(filename).read_bytes()
         self.objects[key] = data
         self.uploads.append((key, data, ExtraArgs))
@@ -47,7 +72,9 @@ class UpdateRssFeedTest(TestCase):
             feed_url="https://example.com/podclean/output/rss.xml",
             duration_seconds=90,
         )
-        self.assertEqual(len(s3.uploads), 1)
+        self.assertEqual(len(s3.uploads), 2)
+        keys = [key for key, _, _ in s3.uploads]
+        self.assertEqual(keys, [RSS_KEY, CATALOG_KEY])
         key, xml, extra = s3.uploads[0]
         self.assertEqual(key, "podclean/output/rss.xml")
         assert extra is not None
@@ -92,3 +119,247 @@ class UpdateRssFeedTest(TestCase):
             enclosure = item.find("enclosure")
             assert guid is not None and enclosure is not None
             self.assertEqual(guid.text, enclosure.get("url"))
+        self.assertEqual(
+            _item_titles(s3.objects[CATALOG_KEY]),
+            ["Brand New", "Newest Episode", "Middle Episode", "Oldest Episode"],
+        )
+
+    def test_catalog_key_sits_beside_public_feed(self) -> None:
+        self.assertEqual(_catalog_key(RSS_KEY), CATALOG_KEY)
+        self.assertEqual(_catalog_key("feed"), "feed-catalog.xml")
+
+    def test_caps_published_feed_to_newest_items(self) -> None:
+        existing = [
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Middle",
+                enclosure_url="https://example.com/podclean/output/middle.mp3",
+                enclosure_length="2",
+                pub_date="Sat, 01 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Newest",
+                enclosure_url="https://example.com/podclean/output/newest.mp3",
+                enclosure_length="3",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+            ),
+        ]
+        s3 = FakeS3(
+            {
+                "podclean/output/rss.xml": build_rss_xml(
+                    existing, feed_url=FEED_URL
+                )
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            "podclean/output/rss.xml",
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            duration_seconds=45,
+            max_items=2,
+        )
+        xml = s3.objects["podclean/output/rss.xml"]
+        channel = ET.fromstring(xml).find("channel")
+        assert channel is not None
+        titles = [item.findtext("title") for item in channel.findall("item")]
+        self.assertEqual(titles, ["Brand New", "Newest"])
+        self.assertEqual(
+            _item_titles(s3.objects[CATALOG_KEY]),
+            ["Brand New", "Newest", "Middle", "Oldest"],
+        )
+
+    def test_raising_max_items_restores_omitted_catalog_episodes(self) -> None:
+        existing = [
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Middle",
+                enclosure_url="https://example.com/podclean/output/middle.mp3",
+                enclosure_length="2",
+                pub_date="Sat, 01 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Newest",
+                enclosure_url="https://example.com/podclean/output/newest.mp3",
+                enclosure_length="3",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+            ),
+        ]
+        s3 = FakeS3({RSS_KEY: build_rss_xml(existing, feed_url=FEED_URL)})
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            max_items=2,
+        )
+        self.assertEqual(_item_titles(s3.objects[RSS_KEY]), ["Brand New", "Newest"])
+
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/even_newer_clean.mp3",
+            1000,
+            "Even Newer",
+            feed_url=FEED_URL,
+            max_items=0,
+        )
+        titles = _item_titles(s3.objects[RSS_KEY])
+        self.assertEqual(
+            set(titles),
+            {"Even Newer", "Brand New", "Newest", "Middle", "Oldest"},
+        )
+        self.assertEqual(titles[-3:], ["Newest", "Middle", "Oldest"])
+        self.assertEqual(
+            set(titles),
+            set(_item_titles(s3.objects[CATALOG_KEY])),
+        )
+
+    def test_zero_max_items_keeps_full_catalog(self) -> None:
+        existing = [
+            RssItem(
+                title=f"Episode {i}",
+                enclosure_url=f"https://example.com/podclean/output/ep{i}.mp3",
+                enclosure_length="1",
+                pub_date=f"Mon, {i:02d} Sep 2026 00:00:00 GMT",
+            )
+            for i in range(1, 5)
+        ]
+        s3 = FakeS3(
+            {
+                "podclean/output/rss.xml": build_rss_xml(
+                    existing, feed_url=FEED_URL
+                )
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            "podclean/output/rss.xml",
+            "https://example.com/podclean/output/ep5.mp3",
+            5,
+            "Episode 5",
+            feed_url=FEED_URL,
+            max_items=0,
+        )
+        xml = s3.objects["podclean/output/rss.xml"]
+        channel = ET.fromstring(xml).find("channel")
+        assert channel is not None
+        self.assertEqual(len(channel.findall("item")), 5)
+        self.assertEqual(len(_item_titles(s3.objects[CATALOG_KEY])), 5)
+
+    def test_catalog_access_denied_still_updates_public_feed(self) -> None:
+        s3 = FakeS3(deny_keys={CATALOG_KEY})
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", stdout):
+            _update_rss_feed(
+                s3,
+                "bucket",
+                RSS_KEY,
+                "https://example.com/podclean/output/ep.mp3",
+                1234,
+                "First Episode",
+                feed_url=FEED_URL,
+            )
+        self.assertIn(RSS_KEY, s3.objects)
+        self.assertNotIn(CATALOG_KEY, s3.objects)
+        self.assertEqual(_item_titles(s3.objects[RSS_KEY]), ["First Episode"])
+        warning = stdout.getvalue()
+        self.assertIn("Warning: catalog PutObject denied", warning)
+        self.assertIn("AccessDenied", warning)
+        self.assertIn("rss.xml was still updated", warning)
+
+    def test_stale_catalog_merges_public_only_episode(self) -> None:
+        catalog = [
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+                description="full notes for oldest",
+            )
+        ]
+        public = [
+            RssItem(
+                title="Newest",
+                enclosure_url="https://example.com/podclean/output/newest.mp3",
+                enclosure_length="3",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+            ),
+            RssItem(
+                title="Oldest",
+                enclosure_url="https://example.com/podclean/output/oldest.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 01 Aug 2026 00:00:00 GMT",
+                description="clipped…",
+            ),
+        ]
+        s3 = FakeS3(
+            {
+                CATALOG_KEY: build_rss_xml(catalog, feed_url=FEED_URL),
+                RSS_KEY: build_rss_xml(public, feed_url=FEED_URL),
+            }
+        )
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            max_items=10,
+        )
+        catalog_titles = _item_titles(s3.objects[CATALOG_KEY])
+        self.assertEqual(set(catalog_titles), {"Brand New", "Newest", "Oldest"})
+        catalog_items = _channel_items(s3.objects[CATALOG_KEY])
+        oldest = next(item for item in catalog_items if item.findtext("title") == "Oldest")
+        self.assertEqual(oldest.findtext("description"), "full notes for oldest")
+
+    def test_public_feed_clips_inherited_descriptions(self) -> None:
+        existing = [
+            RssItem(
+                title="Verbose",
+                enclosure_url="https://example.com/podclean/output/verbose.mp3",
+                enclosure_length="1",
+                pub_date="Sat, 10 Sep 2026 00:00:00 GMT",
+                description="SHOW NOTES " + ("word " * 2000),
+            )
+        ]
+        s3 = FakeS3({RSS_KEY: build_rss_xml(existing, feed_url=FEED_URL)})
+        _update_rss_feed(
+            s3,
+            "bucket",
+            RSS_KEY,
+            "https://example.com/podclean/output/brand_new_clean.mp3",
+            999,
+            "Brand New",
+            feed_url=FEED_URL,
+            max_items=10,
+        )
+        public_items = _channel_items(s3.objects[RSS_KEY])
+        verbose = next(item for item in public_items if item.findtext("title") == "Verbose")
+        public_description = verbose.findtext("description") or ""
+        self.assertLessEqual(len(public_description), 500)
+        catalog_items = _channel_items(s3.objects[CATALOG_KEY])
+        catalog_verbose = next(
+            item for item in catalog_items if item.findtext("title") == "Verbose"
+        )
+        self.assertGreater(len(catalog_verbose.findtext("description") or ""), 5000)
