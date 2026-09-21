@@ -11,7 +11,6 @@ from unittest.mock import patch
 from podclean import config as config_mod
 from podclean.cli import WHISPER_MODEL_HELP
 from podclean.config import Config
-from pathlib import Path as _PathForToml
 from podclean.transcriber import Transcriber, TranscriptionError
 from podclean.whisper_backend import (
     FASTER_WHISPER_DEFAULT_MODEL,
@@ -367,7 +366,10 @@ class TranscriberFacadeTest(TestCase):
 
     def test_missing_audio_file_raises(self) -> None:
         with patch("podclean.transcriber.mlx_whisper", _FakeMlx):
-            transcriber = Transcriber(model_size="tiny", backend="mlx")
+            transcriber = Transcriber(
+                model_size="mlx-community/whisper-tiny",
+                backend="mlx",
+            )
             with self.assertRaises(FileNotFoundError):
                 transcriber.transcribe(Path("/tmp/podclean-missing-audio.wav"))
 
@@ -385,5 +387,6 @@ class PackagingMarkersTest(TestCase):
         text = Path(__file__).resolve().parents[1].joinpath("pyproject.toml").read_text()
         self.assertIn("mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'", text)
         self.assertIn("faster-whisper>=1.0.0; sys_platform != 'darwin' or platform_machine != 'arm64'", text)
+        self.assertIn("audioop-lts>=0.2.1; python_version >= '3.13'", text)
         self.assertIn('mlx = ["mlx-whisper>=0.4.0"]', text)
         self.assertIn('cpu = ["faster-whisper>=1.0.0"]', text)
