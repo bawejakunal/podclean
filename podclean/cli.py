@@ -25,6 +25,13 @@ from podclean.uploader import upload_to_s3
 
 console = Console()
 
+WHISPER_MODEL_HELP = (
+    "Whisper model ID. MLX uses a HuggingFace repo "
+    "(e.g. mlx-community/whisper-large-v3-turbo); "
+    "faster-whisper uses a size/name (e.g. large-v3-turbo). "
+    "Defaults follow the active backend; WHISPER_MODEL overrides."
+)
+
 
 def _print_banner() -> None:
     """Print the PodClean ASCII banner."""
@@ -106,7 +113,9 @@ def _run_pipeline(
         console.print()
         console.print("[bold cyan]Step 1/3:[/] Transcribing audio...", highlight=False)
         console.print(
-            f"  Model: [yellow]{config.whisper_model}[/]  File: [dim]{audio_path.name}[/]"
+            f"  Backend: [yellow]{config.whisper_backend}[/]  "
+            f"Model: [yellow]{config.whisper_model}[/]  "
+            f"File: [dim]{audio_path.name}[/]"
         )
         console.print()
 
@@ -224,7 +233,7 @@ def cli() -> None:
     "--model",
     type=str,
     default=None,
-    help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)",
+    help=WHISPER_MODEL_HELP,
 )
 @click.option(
     "--preview", is_flag=True, help="Preview detected ads without processing audio"
@@ -302,7 +311,7 @@ def file(
     "--model",
     type=str,
     default=None,
-    help="MLX Whisper model repo (default: mlx-community/whisper-large-v3-turbo)",
+    help=WHISPER_MODEL_HELP,
 )
 @click.option(
     "-n",
