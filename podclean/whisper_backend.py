@@ -32,8 +32,8 @@ _BACKEND_ALIASES: dict[str, BackendName] = {
 
 
 @dataclass(frozen=True)
-class BackendDefaults:
-    """Backend-specific transcription defaults."""
+class WhisperSettings:
+    """Model/device/compute triple for one backend."""
 
     model: str
     device: str
@@ -133,16 +133,16 @@ def cuda_available() -> bool:
         return False
 
 
-def backend_defaults(backend: BackendName) -> BackendDefaults:
+def backend_defaults(backend: BackendName) -> WhisperSettings:
     """Return model/device/compute defaults for *backend*."""
 
     if backend == "mlx":
-        return BackendDefaults(
+        return WhisperSettings(
             model=MLX_DEFAULT_MODEL,
             device="gpu",
             compute_type="int8",
         )
-    return BackendDefaults(
+    return WhisperSettings(
         model=FASTER_WHISPER_DEFAULT_MODEL,
         device="cuda" if cuda_available() else "cpu",
         compute_type="int8",

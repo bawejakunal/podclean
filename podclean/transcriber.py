@@ -177,10 +177,11 @@ class Transcriber:
         self.backend: BackendName = resolve_whisper_backend(
             backend or config.whisper_backend
         )
-        self.model_size = model_size or config.whisper_model
+        settings = config.whisper_settings_for(self.backend)
+        self.model_size = model_size or settings.model
         self.word_timestamps = config.word_timestamps
-        self.device = config.whisper_device
-        self.compute_type = config.whisper_compute_type
+        self.device = settings.device
+        self.compute_type = settings.compute_type
         self._engine = self._make_engine(config.vad_filter)
 
         console.print(

@@ -9,6 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from podclean.whisper_backend import (
+    BackendName,
+    WhisperSettings,
     backend_defaults,
     normalize_backend_name,
     platform_default_backend,
@@ -141,17 +143,34 @@ class Config:
             # Keep a usable fallback so validate() can report the bad value.
             self.whisper_backend = platform_default_backend()
 
-        defaults = backend_defaults(self.whisper_backend)  # type: ignore[arg-type]
-        self.whisper_model = (
-            os.getenv("WHISPER_MODEL") or self.whisper_model or defaults.model
+        # Explicit choices are remembered separately so whisper_settings_for()
+        # can re-derive defaults for a different backend.
+        self._whisper_model_override = os.getenv("WHISPER_MODEL") or self.whisper_model
+        self._whisper_device_override = (
+            os.getenv("WHISPER_DEVICE") or self.whisper_device
         )
-        self.whisper_device = (
-            os.getenv("WHISPER_DEVICE") or self.whisper_device or defaults.device
+        self._whisper_compute_type_override = (
+            os.getenv("WHISPER_COMPUTE_TYPE") or self.whisper_compute_type
         )
-        self.whisper_compute_type = (
-            os.getenv("WHISPER_COMPUTE_TYPE")
-            or self.whisper_compute_type
-            or defaults.compute_type
+
+        settings = self.whisper_settings_for(self.whisper_backend)  # type: ignore[arg-type]
+        self.whisper_model = settings.model
+        self.whisper_device = settings.device
+        self.whisper_compute_type = settings.compute_type
+
+    def whisper_settings_for(self, backend: BackendName) -> WhisperSettings:
+        """Return the model/device/compute to use when running *backend*.
+
+        Explicit settings (env vars or constructor overrides) always win;
+        anything unset falls back to that backend's defaults, so switching
+        backends never carries over an incompatible model or device.
+        """
+
+        defaults = backend_defaults(backend)
+        return WhisperSettings(
+            model=self._whisper_model_override or defaults.model,
+            device=self._whisper_device_override or defaults.device,
+            compute_type=self._whisper_compute_type_override or defaults.compute_type,
         )
 
 
