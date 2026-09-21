@@ -1,19 +1,35 @@
-"""Audio transcription using mlx-whisper.
+"""Audio transcription with word-level timestamps.
 
-Provides word-level timestamps for precise ad boundary detection.
-Optimised for Apple Silicon (M1/M2/M3/M4) via MLX framework.
+Selects mlx-whisper (Apple Silicon / macOS) or faster-whisper (Linux and
+other non-MLX environments) so callers always receive
+``list[TranscriptSegment]``.
 """
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Protocol
 
-import mlx_whisper
 from rich.console import Console
 
 from podclean.config import get_config
 from podclean.models import TranscriptSegment, Word
+from podclean.whisper_backend import (
+    BackendName,
+    missing_backend_error,
+    resolve_whisper_backend,
+)
+
+try:
+    import mlx_whisper
+except ImportError:  # pragma: no cover - optional extra
+    mlx_whisper = None
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:  # pragma: no cover - optional extra
+    WhisperModel = None
 
 console = Console()
 
@@ -22,33 +38,189 @@ class TranscriptionError(Exception):
     """Raised when audio transcription fails."""
 
 
-class Transcriber:
-    """Transcribe audio files using mlx-whisper with word-level timestamps.
+class _WhisperEngine(Protocol):
+    def transcribe(self, audio_path: Path) -> tuple[str, list[TranscriptSegment]]:
+        """Return ``(language, segments)`` for *audio_path*."""
 
-    The transcriber leverages Apple's MLX framework for GPU-accelerated
-    transcription on Apple Silicon and produces :class:`TranscriptSegment`
-    objects that carry per-word timing data.
+
+class _MlxEngine:
+    """mlx-whisper implementation (Apple Silicon GPU)."""
+
+    def __init__(self, model_size: str, word_timestamps: bool) -> None:
+        if mlx_whisper is None:
+            raise TranscriptionError(missing_backend_error("mlx"))
+        self.model_size = model_size
+        self.word_timestamps = word_timestamps
+
+    def transcribe(self, audio_path: Path) -> tuple[str, list[TranscriptSegment]]:
+        result = mlx_whisper.transcribe(
+            str(audio_path),
+            path_or_hf_repo=self.model_size,
+            word_timestamps=self.word_timestamps,
+        )
+        language = str(result.get("language", "unknown"))
+        segments: list[TranscriptSegment] = []
+        for raw_seg in result.get("segments", []) or []:
+            segments.append(
+                TranscriptSegment(
+                    start=float(raw_seg["start"]),
+                    end=float(raw_seg["end"]),
+                    text=str(raw_seg.get("text", "")).strip(),
+                    words=_words_from_mapping(raw_seg.get("words", []) or []),
+                )
+            )
+        return language, segments
+
+
+class _FasterWhisperEngine:
+    """faster-whisper implementation (CPU or CUDA)."""
+
+    def __init__(
+        self,
+        model_size: str,
+        word_timestamps: bool,
+        device: str,
+        compute_type: str,
+        vad_filter: bool,
+    ) -> None:
+        if WhisperModel is None:
+            raise TranscriptionError(missing_backend_error("faster-whisper"))
+        self.model_size = model_size
+        self.word_timestamps = word_timestamps
+        self.device = device
+        self.compute_type = compute_type
+        self.vad_filter = vad_filter
+        self._model: object | None = None
+
+    def _get_model(self) -> object:
+        if self._model is None:
+            self._model = WhisperModel(
+                self.model_size,
+                device=self.device,
+                compute_type=self.compute_type,
+            )
+        return self._model
+
+    def transcribe(self, audio_path: Path) -> tuple[str, list[TranscriptSegment]]:
+        model = self._get_model()
+        segments_iter, info = model.transcribe(
+            str(audio_path),
+            word_timestamps=self.word_timestamps,
+            vad_filter=self.vad_filter,
+        )
+        language = str(getattr(info, "language", "unknown"))
+        segments: list[TranscriptSegment] = []
+        for raw_seg in segments_iter:
+            segments.append(
+                TranscriptSegment(
+                    start=float(raw_seg.start),
+                    end=float(raw_seg.end),
+                    text=str(raw_seg.text or "").strip(),
+                    words=_words_from_objects(getattr(raw_seg, "words", None) or []),
+                )
+            )
+        return language, segments
+
+
+def _words_from_mapping(raw_words: list[dict]) -> list[Word]:
+    return [
+        Word(
+            text=str(w.get("word", "")).strip(),
+            start=float(w["start"]),
+            end=float(w["end"]),
+            probability=float(w.get("probability", 1.0)),
+        )
+        for w in raw_words
+    ]
+
+
+def _words_from_objects(raw_words: list[object]) -> list[Word]:
+    result: list[Word] = []
+    for w in raw_words:
+        result.append(
+            Word(
+                text=str(getattr(w, "word", "")).strip(),
+                start=float(w.start),
+                end=float(w.end),
+                probability=float(getattr(w, "probability", 1.0)),
+            )
+        )
+    return result
+
+
+class Transcriber:
+    """Transcribe audio files with word-level timestamps.
+
+    The public API is backend-agnostic: :meth:`transcribe` always returns
+    :class:`TranscriptSegment` objects. The engine is chosen by
+    :func:`resolve_whisper_backend` (env override → installed package →
+    platform default).
 
     Parameters
     ----------
     model_size:
-        Whisper model HuggingFace repo path (e.g.
-        ``mlx-community/whisper-large-v3-turbo``). Falls back to the value in
+        Whisper model id. MLX expects a HuggingFace repo
+        (e.g. ``mlx-community/whisper-large-v3-turbo``); faster-whisper
+        expects a size/name (e.g. ``large-v3-turbo``). Falls back to
         :func:`podclean.config.get_config` when *None*.
+    backend:
+        Optional ``mlx`` or ``faster-whisper`` override. When omitted,
+        uses the resolved config backend.
     """
 
-    def __init__(self, model_size: str | None = None) -> None:
+    def __init__(
+        self,
+        model_size: str | None = None,
+        backend: str | None = None,
+    ) -> None:
         config = get_config()
+        self.backend: BackendName = resolve_whisper_backend(
+            backend or config.whisper_backend
+        )
         self.model_size = model_size or config.whisper_model
         self.word_timestamps = config.word_timestamps
+        self.device = config.whisper_device
+        self.compute_type = config.whisper_compute_type
+        self._engine = self._make_engine(config.vad_filter)
 
         console.print(
-            f"  [green]✓[/green] MLX framework ready. Model will be loaded on demand: [bold]{self.model_size}[/bold]"
+            f"  [green]✓[/green] {self._backend_label()} ready. "
+            f"Model: [bold]{self.model_size}[/bold] "
+            f"([dim]{self.device}/{self.compute_type}[/dim])"
+        )
+        self._warn_if_model_looks_mismatched()
+
+    def _backend_label(self) -> str:
+        return "mlx-whisper" if self.backend == "mlx" else "faster-whisper"
+
+    def _make_engine(self, vad_filter: bool) -> _WhisperEngine:
+        if self.backend == "mlx":
+            return _MlxEngine(self.model_size, self.word_timestamps)
+        return _FasterWhisperEngine(
+            self.model_size,
+            self.word_timestamps,
+            self.device,
+            self.compute_type,
+            vad_filter,
         )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def _warn_if_model_looks_mismatched(self) -> None:
+        model = self.model_size
+        if self.backend == "faster-whisper" and model.startswith("mlx-community/"):
+            console.print(
+                "  [yellow]Warning:[/yellow] "
+                f"{model!r} looks like an MLX HuggingFace repo, but the "
+                "active backend is faster-whisper. Use a size/name such as "
+                "large-v3-turbo, or set WHISPER_BACKEND=mlx."
+            )
+        if self.backend == "mlx" and "/" not in model:
+            console.print(
+                "  [yellow]Warning:[/yellow] "
+                f"{model!r} looks like a faster-whisper size name, but the "
+                "active backend is mlx. Use a HuggingFace repo such as "
+                "mlx-community/whisper-large-v3-turbo, or set "
+                "WHISPER_BACKEND=faster-whisper."
+            )
 
     def transcribe(self, audio_path: Path) -> list[TranscriptSegment]:
         """Transcribe an audio file and return word-level segments."""
@@ -60,35 +232,22 @@ class Transcriber:
         console.print(f"\n[bold]Transcribing[/bold] [cyan]{audio_path.name}[/cyan]…")
         start_time = time.perf_counter()
 
+        status = (
+            "Running MLX-Whisper inference (GPU)…"
+            if self.backend == "mlx"
+            else "Running faster-whisper inference…"
+        )
         try:
-            with console.status("[bold blue]Running MLX-Whisper inference (GPU)…"):
-                result = mlx_whisper.transcribe(
-                    str(audio_path),
-                    path_or_hf_repo=self.model_size,
-                    word_timestamps=self.word_timestamps,
-                )
+            with console.status(f"[bold blue]{status}"):
+                language, segments = self._engine.transcribe(audio_path)
+        except TranscriptionError:
+            raise
         except Exception as exc:
             raise TranscriptionError(
                 f"Transcription failed for {audio_path.name}: {exc}"
             ) from exc
 
-        language = result.get("language", "unknown")
-
         console.print(f"  [dim]Language:[/dim] {language}")
-
-        segments: list[TranscriptSegment] = []
-        raw_segments = result.get("segments", [])
-
-        with console.status("[bold blue]Processing segments…"):
-            for raw_seg in raw_segments:
-                words = self._extract_words(raw_seg)
-                segment = TranscriptSegment(
-                    start=float(raw_seg["start"]),
-                    end=float(raw_seg["end"]),
-                    text=str(raw_seg.get("text", "")).strip(),
-                    words=words,
-                )
-                segments.append(segment)
 
         elapsed = time.perf_counter() - start_time
         total_words = sum(len(seg.words) for seg in segments)
@@ -101,18 +260,3 @@ class Transcriber:
         )
 
         return segments
-
-    def _extract_words(self, raw_segment: dict) -> list[Word]:
-        raw_words = raw_segment.get("words", [])
-        if not raw_words:
-            return []
-
-        return [
-            Word(
-                text=str(w.get("word", "")).strip(),
-                start=float(w["start"]),
-                end=float(w["end"]),
-                probability=float(w.get("probability", 1.0)),
-            )
-            for w in raw_words
-        ]
