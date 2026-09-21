@@ -21,6 +21,11 @@ from podclean.whisper_backend import (
     resolve_whisper_backend,
 )
 
+try:
+    from faster_whisper.utils import available_models
+except ImportError:  # faster-whisper is absent on Apple Silicon installs
+    available_models = None
+
 _WHISPER_ENV = (
     "WHISPER_BACKEND",
     "WHISPER_MODEL",
@@ -210,6 +215,24 @@ class ConfigWhisperDefaultsTest(TestCase):
         self.assertEqual(cfg.whisper_device, "cuda")
         self.assertEqual(cfg.whisper_compute_type, "float16")
 
+    def test_settings_for_other_backend_use_that_backends_defaults(self) -> None:
+        """A Mac-configured run asking for faster-whisper must not reuse MLX ids."""
+
+        cfg = Config(whisper_backend="mlx")
+        self.assertEqual(cfg.whisper_model, MLX_DEFAULT_MODEL)
+
+        with patch("podclean.whisper_backend.cuda_available", return_value=False):
+            settings = cfg.whisper_settings_for("faster-whisper")
+        self.assertEqual(settings.model, FASTER_WHISPER_DEFAULT_MODEL)
+        self.assertEqual(settings.device, "cpu")
+        self.assertEqual(settings.compute_type, "int8")
+
+    def test_explicit_model_override_applies_to_every_backend(self) -> None:
+        os.environ["WHISPER_MODEL"] = "small"
+        cfg = Config(whisper_backend="mlx")
+        self.assertEqual(cfg.whisper_settings_for("mlx").model, "small")
+        self.assertEqual(cfg.whisper_settings_for("faster-whisper").model, "small")
+
     def test_invalid_backend_is_reported_by_validate(self) -> None:
         os.environ["GEMINI_API_KEY"] = "test-key"
         os.environ["WHISPER_BACKEND"] = "nope"
@@ -345,6 +368,44 @@ class TranscriberFacadeTest(TestCase):
         self.assertTrue(_FakeWhisperModel.last_transcribe["word_timestamps"])
         self.assertTrue(_FakeWhisperModel.last_transcribe["vad_filter"])
 
+    def test_backend_override_switches_model_and_device_away_from_mlx(self) -> None:
+        """On an MLX-configured host, backend="faster-whisper" must be runnable."""
+
+        with (
+            patch("podclean.transcriber.WhisperModel", _FakeWhisperModel),
+            patch("podclean.transcriber.mlx_whisper", _FakeMlx),
+            patch("podclean.whisper_backend.cuda_available", return_value=False),
+        ):
+            config_mod._config = Config(whisper_backend="mlx")
+            transcriber = Transcriber(backend="faster-whisper")
+            transcriber.transcribe(Path(__file__).resolve())
+
+        self.assertEqual(transcriber.backend, "faster-whisper")
+        self.assertEqual(transcriber.model_size, FASTER_WHISPER_DEFAULT_MODEL)
+        self.assertEqual(transcriber.device, "cpu")
+        assert _FakeWhisperModel.last_init is not None
+        self.assertEqual(
+            _FakeWhisperModel.last_init["model_size"],
+            FASTER_WHISPER_DEFAULT_MODEL,
+        )
+        self.assertEqual(_FakeWhisperModel.last_init["device"], "cpu")
+
+    def test_backend_override_switches_model_away_from_faster_whisper(self) -> None:
+        with (
+            patch("podclean.transcriber.WhisperModel", _FakeWhisperModel),
+            patch("podclean.transcriber.mlx_whisper", _FakeMlx),
+            patch("podclean.whisper_backend.cuda_available", return_value=False),
+        ):
+            config_mod._config = Config(whisper_backend="faster-whisper")
+            transcriber = Transcriber(backend="mlx")
+            transcriber.transcribe(Path(__file__).resolve())
+
+        self.assertEqual(transcriber.backend, "mlx")
+        self.assertEqual(transcriber.model_size, MLX_DEFAULT_MODEL)
+        self.assertEqual(transcriber.device, "gpu")
+        assert _FakeMlx.last_call is not None
+        self.assertEqual(_FakeMlx.last_call["path_or_hf_repo"], MLX_DEFAULT_MODEL)
+
     def test_missing_backend_error_includes_install_command(self) -> None:
         with (
             patch("podclean.transcriber.mlx_whisper", None),
@@ -386,7 +447,18 @@ class PackagingMarkersTest(TestCase):
     def test_pyproject_selects_backend_with_environment_markers(self) -> None:
         text = Path(__file__).resolve().parents[1].joinpath("pyproject.toml").read_text()
         self.assertIn("mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'", text)
-        self.assertIn("faster-whisper>=1.0.0; sys_platform != 'darwin' or platform_machine != 'arm64'", text)
+        self.assertIn("faster-whisper>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'", text)
         self.assertIn("audioop-lts>=0.2.1; python_version >= '3.13'", text)
         self.assertIn('mlx = ["mlx-whisper>=0.4.0"]', text)
-        self.assertIn('cpu = ["faster-whisper>=1.0.0"]', text)
+        self.assertIn('cpu = ["faster-whisper>=1.1.0"]', text)
+
+    def test_default_model_is_known_to_installed_faster_whisper(self) -> None:
+        """The default alias must exist in the pinned faster-whisper's registry.
+
+        ``large-v3-turbo`` was only added in faster-whisper 1.1.0; older
+        releases reject it in ``download_model``.
+        """
+
+        if available_models is None:
+            self.skipTest("faster-whisper is not installed")
+        self.assertIn(FASTER_WHISPER_DEFAULT_MODEL, available_models())

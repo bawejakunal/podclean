@@ -32,7 +32,7 @@ Audio File → Transcribe (Whisper) → Detect Ads (Gemini AI) → Remove & Expo
 | Platform | Package installed automatically |
 |----------|----------------------------------|
 | macOS Apple Silicon (`darwin` + `arm64`) | `mlx-whisper` |
-| Linux, Intel Mac, and other non-MLX hosts | `faster-whisper` |
+| Linux, Intel Mac, and other non-MLX hosts | `faster-whisper` (>= 1.1, the first release that knows `large-v3-turbo`) |
 
 ```bash
 cd ~/podclean
@@ -129,6 +129,8 @@ podclean file episode.mp3 --model mlx-community/whisper-large-v3-turbo
 | `CROSSFADE_MS` | Crossfade duration between cuts | `300` |
 
 Runtime backend selection: `WHISPER_BACKEND` → whichever of `mlx-whisper` / `faster-whisper` is installed (platform default if both) → Darwin → mlx, otherwise faster-whisper. If the chosen backend is missing, the CLI errors with the exact `pip install` command to fix it.
+
+Switching backends also switches the model and device defaults, so a machine configured for MLX can run faster-whisper (and vice versa) without hand-editing `WHISPER_MODEL`. Anything you set explicitly is always kept.
 
 ## Performance
 
