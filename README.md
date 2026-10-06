@@ -96,6 +96,19 @@ podclean feed "https://rss.art19.com/the-daily-stoic" -n 3
 podclean file episode.mp3 --preview
 ```
 
+#### Reclaim local disk after upload (or instead of a run)
+Cleaned `*_clean.mp3` files, the episode download cache, and transcript/temp scratch stay on disk after a normal run. They are already on S3 when `--upload` succeeds. `--cleanup` is **opt-in** and local-only: it never deletes `.env`, `processed.json`, `feeds.json`, source, or anything in S3.
+
+```bash
+# Sweep leftovers and exit (no transcription / ad-removal)
+podclean --cleanup
+podclean cleanup
+
+# Run as usual, then delete local leftovers (typical after --upload)
+podclean feed "https://rss.art19.com/the-daily-stoic" --upload --cleanup
+podclean file episode.mp3 --upload --cleanup
+```
+
 #### Use a different Whisper model
 ```bash
 # faster-whisper (Linux / CPU)
@@ -114,6 +127,7 @@ podclean file episode.mp3 --model mlx-community/whisper-large-v3-turbo
 | `--output` | Output file path | `./output/<name>_clean.mp3` |
 | `--preview` | Show detected ads without processing | off |
 | `--api-key` | Gemini API key (or set in .env) | — |
+| `--cleanup` | Delete leftover local output audio, download cache, and scratch files. Safe to pass alone (`podclean --cleanup`) or after `file` / `feed`. Keeps `.env`, `processed.json`, and `feeds.json`. | off |
 
 ## Configuration (`.env`)
 
