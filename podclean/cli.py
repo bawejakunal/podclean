@@ -6,6 +6,8 @@ import json
 import re
 import sys
 import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -229,16 +231,47 @@ def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
             pass
 
 
-def _run_cleanup(config: Config | None = None) -> CleanupSummary:
+def _run_cleanup(
+    config: Config | None = None,
+    preserve: Iterable[Path] = (),
+) -> CleanupSummary:
     """Sweep configured output/cache dirs and print a short summary."""
     if config is None:
         config = get_config()
     summary = cleanup_local_artifacts(
         output_dir=config.output_dir,
         cache_dir=config.cache_dir,
+        preserve=preserve,
     )
     _print_cleanup_summary(summary, config)
     return summary
+
+
+def _exit_if_cleanup_failed(summary: CleanupSummary) -> None:
+    if summary.errors:
+        sys.exit(1)
+
+
+@contextmanager
+def _cleanup_after(
+    enabled: bool,
+    config: Config,
+    preserve: Iterable[Path] = (),
+) -> Iterator[None]:
+    """Run the leftover sweep once the wrapped command finishes, even on failure.
+
+    A failed sweep exits nonzero only when the command itself succeeded, so it
+    never masks the command's own error or exit status.
+    """
+    if not enabled:
+        yield
+        return
+    try:
+        yield
+    except BaseException:
+        _run_cleanup(config, preserve)
+        raise
+    _exit_if_cleanup_failed(_run_cleanup(config, preserve))
 
 
 def _print_cleanup_summary(summary: CleanupSummary, config: Config) -> None:
@@ -255,7 +288,10 @@ def _print_cleanup_summary(summary: CleanupSummary, config: Config) -> None:
     else:
         console.print("  Nothing to clean (0 files, 0 bytes).")
     if summary.errors:
-        console.print(f"  [yellow]⚠[/] Could not delete {summary.errors} file(s).")
+        console.print(
+            f"  [red]✗[/] {summary.errors} file(s) or folder(s) could not be "
+            "read or deleted."
+        )
 
 
 @click.group(invoke_without_command=True)
@@ -268,7 +304,7 @@ def cli(ctx: click.Context, cleanup: bool) -> None:
         return
     if cleanup:
         _print_banner()
-        _run_cleanup()
+        _exit_if_cleanup_failed(_run_cleanup())
         return
     click.echo(ctx.get_help())
 
@@ -316,15 +352,16 @@ def file(
         overrides["whisper_model"] = model
     config = get_config(**overrides)
 
-    # Validate config
-    errors = config.validate()
-    if errors:
-        for err in errors:
-            console.print(f"[red]✗ Config error:[/] {err}")
-        sys.exit(1)
+    # The input may live in output_dir/cache_dir; never sweep the user's source.
+    with _cleanup_after(cleanup, config, preserve=(audio_file,)):
+        # Validate config
+        errors = config.validate()
+        if errors:
+            for err in errors:
+                console.print(f"[red]✗ Config error:[/] {err}")
+            sys.exit(1)
 
-    console.print(f"Processing: [bold]{audio_file.name}[/]")
-    try:
+        console.print(f"Processing: [bold]{audio_file.name}[/]")
         result = _run_pipeline(audio_file, output, model, preview, config)
 
         if result and not preview:
@@ -352,9 +389,6 @@ def file(
                         console.print("[red]✗ Failed to send notification.[/]")
                 else:
                     console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
-    finally:
-        if cleanup:
-            _run_cleanup(config)
 
 
 @cli.command()
@@ -408,41 +442,41 @@ def feed(
         overrides["whisper_model"] = model
     config = get_config(**overrides)
 
-    # Validate config
-    errors = config.validate()
-    if errors:
-        for err in errors:
-            console.print(f"[red]✗ Config error:[/] {err}")
-        sys.exit(1)
+    with _cleanup_after(cleanup, config):
+        # Validate config
+        errors = config.validate()
+        if errors:
+            for err in errors:
+                console.print(f"[red]✗ Config error:[/] {err}")
+            sys.exit(1)
 
-    # Fetch episode
-    fetcher = PodcastFetcher()
-    console.print(f"Fetching feed: [dim]{rss_url}[/]")
+        # Fetch episode
+        fetcher = PodcastFetcher()
+        console.print(f"Fetching feed: [dim]{rss_url}[/]")
 
-    episodes = fetcher.list_episodes(rss_url)
-    if not episodes:
-        console.print("[red]✗ No episodes found in feed.[/]")
-        sys.exit(1)
+        episodes = fetcher.list_episodes(rss_url)
+        if not episodes:
+            console.print("[red]✗ No episodes found in feed.[/]")
+            sys.exit(1)
 
-    if episode_num < 1 or episode_num > len(episodes):
-        console.print(
-            f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]"
-        )
-        sys.exit(1)
+        if episode_num < 1 or episode_num > len(episodes):
+            console.print(
+                f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]"
+            )
+            sys.exit(1)
 
-    episode = episodes[episode_num - 1]
-    console.print(f"Episode: [bold]{episode.title}[/]")
-    console.print(f"Published: [dim]{episode.published}[/]")
+        episode = episodes[episode_num - 1]
+        console.print(f"Episode: [bold]{episode.title}[/]")
+        console.print(f"Published: [dim]{episode.published}[/]")
 
-    audio_path = fetcher.download_episode(episode)
-    console.print(f"Downloaded to: [dim]{audio_path}[/]")
+        audio_path = fetcher.download_episode(episode)
+        console.print(f"Downloaded to: [dim]{audio_path}[/]")
 
-    if output is None:
-        # Remove invalid filename characters and spaces
-        safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
-        output = str(config.output_dir / f"{safe_title}_clean.{config.output_format}")
+        if output is None:
+            # Remove invalid filename characters and spaces
+            safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
+            output = str(config.output_dir / f"{safe_title}_clean.{config.output_format}")
 
-    try:
         result = _run_pipeline(audio_path, output, model, preview, config)
 
         if result and not preview:
@@ -470,9 +504,6 @@ def feed(
                         console.print("[red]✗ Failed to send notification.[/]")
                 else:
                     console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
-    finally:
-        if cleanup:
-            _run_cleanup(config)
 
 
 
@@ -524,7 +555,7 @@ def cleanup() -> None:
     Example: podclean cleanup
     """
     _print_banner()
-    _run_cleanup()
+    _exit_if_cleanup_failed(_run_cleanup())
 
 
 if __name__ == "__main__":

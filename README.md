@@ -97,7 +97,9 @@ podclean file episode.mp3 --preview
 ```
 
 #### Reclaim local disk after upload (or instead of a run)
-Cleaned `*_clean.mp3` files, the episode download cache, and transcript/temp scratch stay on disk after a normal run. They are already on S3 when `--upload` succeeds. `--cleanup` is **opt-in** and local-only: it never deletes `.env`, `processed.json`, `feeds.json`, source, or anything in S3.
+Cleaned `*_clean.mp3` files, the episode download cache, and transcript/temp scratch stay on disk after a normal run. They are already on S3 when `--upload` succeeds. `--cleanup` is **opt-in** and local-only: it never deletes `.env`, `processed.json`, `feeds.json`, source, or anything in S3. With `file`, the input audio is kept even if it sits in the output or cache directory.
+
+After `file` / `feed`, the sweep runs even if the command fails. If any leftover or directory cannot be read or deleted, PodClean prints the count and exits with status 1 (unless the command already failed, in which case its own error is reported).
 
 ```bash
 # Sweep leftovers and exit (no transcription / ad-removal)

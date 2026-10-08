@@ -7,6 +7,7 @@ the configured output and cache directories.  Config, feed lists, and
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,11 +71,13 @@ def cleanup_local_artifacts(
     *,
     output_dir: Path,
     cache_dir: Path,
+    preserve: Iterable[Path] = (),
 ) -> CleanupSummary:
     """Delete leftover local media and scratch under *output_dir* and *cache_dir*.
 
     Missing directories are ignored.  The sweep is idempotent: a second call
-    with nothing left to delete returns a zero summary.
+    with nothing left to delete returns a zero summary.  Directories or files
+    that exist but cannot be read or deleted are counted in ``errors``.
 
     Parameters
     ----------
@@ -82,13 +85,18 @@ def cleanup_local_artifacts(
         Configured cleaned-audio directory (typically ``./output``).
     cache_dir:
         Configured episode download / transcript cache.
+    preserve:
+        Paths that must survive the sweep even if they look like leftovers
+        (e.g. the user's own input file when it lives in ``output_dir``).
     """
+    keep = {_resolve_or_none(p) for p in preserve} - {None}
+
     files_removed = 0
     bytes_freed = 0
     errors = 0
 
     for directory in (output_dir, cache_dir):
-        removed, freed, failed = _clean_directory(directory)
+        removed, freed, failed = _clean_directory(directory, keep)
         files_removed += removed
         bytes_freed += freed
         errors += failed
@@ -100,26 +108,37 @@ def cleanup_local_artifacts(
     )
 
 
-def _clean_directory(directory: Path) -> tuple[int, int, int]:
+def _resolve_or_none(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except OSError:
+        return None
+
+
+def _clean_directory(directory: Path, keep: set[Path]) -> tuple[int, int, int]:
     """Remove leftover files in *directory*.  Returns (count, bytes, errors)."""
-    if not _is_safe_cleanup_dir(directory):
+    try:
+        resolved = directory.resolve()
+        if not resolved.is_dir():
+            return 0, 0, 0
+        if not _is_safe_cleanup_dir(resolved):
+            return 0, 0, 0
+        entries = list(resolved.iterdir())
+    except (FileNotFoundError, NotADirectoryError):
         return 0, 0, 0
+    except OSError:
+        return 0, 0, 1
 
     files_removed = 0
     bytes_freed = 0
     errors = 0
 
-    try:
-        entries = list(directory.iterdir())
-    except OSError:
-        return 0, 0, 0
-
     for path in entries:
-        if not path.is_file():
-            continue
-        if not _is_leftover_file(path):
+        if not _is_leftover_file(path) or _resolve_or_none(path) in keep:
             continue
         try:
+            if not path.is_file():
+                continue
             size = path.stat().st_size
             path.unlink()
         except FileNotFoundError:
@@ -133,16 +152,8 @@ def _clean_directory(directory: Path) -> tuple[int, int, int]:
     return files_removed, bytes_freed, errors
 
 
-def _is_safe_cleanup_dir(directory: Path) -> bool:
-    """Return True if *directory* exists and is safe to sweep for leftovers."""
-    try:
-        resolved = directory.resolve()
-    except OSError:
-        return False
-
-    if not resolved.is_dir():
-        return False
-
+def _is_safe_cleanup_dir(resolved: Path) -> bool:
+    """Return True if the resolved, existing *resolved* dir is safe to sweep."""
     if resolved.name in _UNSAFE_DIR_NAMES:
         return False
 

@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest import TestCase
+from unittest import TestCase, skipIf
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from podclean import config as config_mod
-from podclean.cleanup import cleanup_local_artifacts, format_bytes
+from podclean.cleanup import CleanupSummary, cleanup_local_artifacts, format_bytes
 from podclean.cli import cli
 from podclean.config import Config
 
@@ -139,6 +139,78 @@ class CleanupLocalArtifactsTest(TestCase):
             self.assertEqual(again.files_removed, 0)
             self.assertEqual(again.bytes_freed, 0)
 
+    def test_preserve_keeps_listed_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            source = _write(output / "my_episode.mp3", b"only copy")
+            leftover = _write(output / "my_episode_clean.mp3", b"generated")
+
+            summary = cleanup_local_artifacts(
+                output_dir=output,
+                cache_dir=Path(tmp) / "cache",
+                preserve=[output / "." / "my_episode.mp3"],
+            )
+
+            self.assertEqual(summary.files_removed, 1)
+            self.assertTrue(source.exists())
+            self.assertFalse(leftover.exists())
+
+
+@skipIf(os.name != "posix" or os.geteuid() == 0, "needs POSIX permissions as non-root")
+class CleanupPermissionErrorsTest(TestCase):
+    def test_unreadable_directory_counts_as_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            _write(output / "ep_clean.mp3", b"x")
+            output.chmod(0)
+            try:
+                summary = cleanup_local_artifacts(
+                    output_dir=output, cache_dir=Path(tmp) / "cache"
+                )
+            finally:
+                output.chmod(0o700)
+            self.assertEqual(summary.files_removed, 0)
+            self.assertEqual(summary.errors, 1)
+
+    def test_listable_but_unsearchable_directory_counts_as_error(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            _write(output / "a_clean.mp3", b"x")
+            output.chmod(0o400)
+            try:
+                summary = cleanup_local_artifacts(
+                    output_dir=output, cache_dir=Path(tmp) / "cache"
+                )
+            finally:
+                output.chmod(0o700)
+            self.assertEqual(summary.files_removed, 0)
+            self.assertEqual(summary.errors, 1)
+            self.assertTrue((output / "a_clean.mp3").exists())
+
+
+class CleanupEntryProbeErrorsTest(TestCase):
+    def test_entry_probe_errors_are_counted_not_raised(self) -> None:
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            blocked = _write(output / "blocked_clean.mp3", b"x")
+            fine = _write(output / "fine_clean.mp3", b"y")
+            real_is_file = Path.is_file
+
+            def is_file(path: Path) -> bool:
+                if path.name == blocked.name:
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_is_file(path)
+
+            with patch.object(Path, "is_file", is_file):
+                summary = cleanup_local_artifacts(
+                    output_dir=output, cache_dir=Path(tmp) / "cache"
+                )
+
+            self.assertEqual(summary.files_removed, 1)
+            self.assertEqual(summary.errors, 1)
+            self.assertTrue(blocked.exists())
+            self.assertFalse(fine.exists())
+
 
 class CleanupCliTest(TestCase):
     def setUp(self) -> None:
@@ -238,3 +310,86 @@ class CleanupCliTest(TestCase):
         self.assertEqual(result.exit_code, 0, result.output)
         sweep.assert_not_called()
         self.assertTrue(leftover.exists())
+
+    def test_file_preview_cleanup_keeps_input_inside_output_dir(self) -> None:
+        source = _write(self.output / "episode.mp3", b"only copy")
+        leftover = _write(self.output / "older_clean.mp3", b"generated")
+
+        with (
+            self._patch_config(),
+            patch("podclean.cli._run_pipeline", return_value=None),
+        ):
+            result = self.runner.invoke(
+                cli, ["file", str(source), "--preview", "--cleanup"]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(source.exists())
+        self.assertFalse(leftover.exists())
+
+    def test_cleanup_failures_exit_nonzero(self) -> None:
+        failed = CleanupSummary(files_removed=1, bytes_freed=10, errors=2)
+        with (
+            self._patch_config(),
+            patch("podclean.cli.cleanup_local_artifacts", return_value=failed),
+        ):
+            for args in (["--cleanup"], ["cleanup"]):
+                result = self.runner.invoke(cli, args)
+                self.assertEqual(result.exit_code, 1, result.output)
+                self.assertIn("could not be read or deleted", result.output)
+
+    def test_file_cleanup_failure_exits_nonzero_after_successful_run(self) -> None:
+        audio = _write(self.root / "episode.mp3", b"fake-audio")
+        failed = CleanupSummary(errors=1)
+        with (
+            self._patch_config(),
+            patch("podclean.cli._run_pipeline", return_value=None),
+            patch("podclean.cli.cleanup_local_artifacts", return_value=failed),
+        ):
+            result = self.runner.invoke(cli, ["file", str(audio), "--cleanup"])
+
+        self.assertEqual(result.exit_code, 1, result.output)
+
+    def test_cleanup_failure_does_not_mask_pipeline_error(self) -> None:
+        audio = _write(self.root / "episode.mp3", b"fake-audio")
+        failed = CleanupSummary(errors=1)
+        with (
+            self._patch_config(),
+            patch("podclean.cli._run_pipeline", side_effect=RuntimeError("boom")),
+            patch(
+                "podclean.cli.cleanup_local_artifacts", return_value=failed
+            ) as sweep,
+        ):
+            result = self.runner.invoke(cli, ["file", str(audio), "--cleanup"])
+
+        sweep.assert_called_once()
+        self.assertIsInstance(result.exception, RuntimeError)
+
+    def test_feed_cleanup_runs_when_fetch_fails(self) -> None:
+        leftover = _write(self.output / "old_clean.mp3", b"generated")
+        with (
+            self._patch_config(),
+            patch("podclean.cli.PodcastFetcher") as fetcher_cls,
+        ):
+            fetcher_cls.return_value.list_episodes.side_effect = RuntimeError("down")
+            result = self.runner.invoke(
+                cli, ["feed", "https://example.com/rss", "--cleanup"]
+            )
+
+        self.assertIsInstance(result.exception, RuntimeError)
+        self.assertFalse(leftover.exists())
+
+    def test_feed_cleanup_runs_when_feed_is_empty(self) -> None:
+        leftover = _write(self.cache / "deadbeefcafebabe.mp3", b"orig")
+        with (
+            self._patch_config(),
+            patch("podclean.cli.PodcastFetcher") as fetcher_cls,
+        ):
+            fetcher_cls.return_value.list_episodes.return_value = []
+            result = self.runner.invoke(
+                cli, ["feed", "https://example.com/rss", "--cleanup"]
+            )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("No episodes found", result.output)
+        self.assertFalse(leftover.exists())
