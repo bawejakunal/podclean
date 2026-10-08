@@ -16,6 +16,8 @@ from datetime import timezone
 from email.utils import formatdate, parsedate_to_datetime
 from typing import Final
 
+from podclean.formats import AUDIO_MIME_TYPES, DEFAULT_AUDIO_MIME_TYPE
+
 ITUNES_NS: Final = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ATOM_NS: Final = "http://www.w3.org/2005/Atom"
 
@@ -24,16 +26,6 @@ DEFAULT_CHANNEL_DESCRIPTION: Final = "Automated ad-free podcast episodes"
 DEFAULT_CHANNEL_AUTHOR: Final = "PodClean"
 DEFAULT_LANGUAGE: Final = "en"
 DEFAULT_ITUNES_CATEGORY: Final = "Education"
-
-_AUDIO_MIME_TYPES: Final = {
-    ".mp3": "audio/mpeg",
-    ".m4a": "audio/mp4",
-    ".mp4": "audio/mp4",
-    ".wav": "audio/wav",
-    ".ogg": "audio/ogg",
-    ".aac": "audio/aac",
-}
-
 
 @dataclass(frozen=True)
 class RssItem:
@@ -62,7 +54,7 @@ def audio_mime_type(filename: str) -> str:
     suffix = ""
     if "." in filename:
         suffix = "." + filename.rsplit(".", 1)[-1].lower()
-    return _AUDIO_MIME_TYPES.get(suffix, "audio/mpeg")
+    return AUDIO_MIME_TYPES.get(suffix, DEFAULT_AUDIO_MIME_TYPE)
 
 
 def format_itunes_duration(seconds: float | int | None) -> str | None:

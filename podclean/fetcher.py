@@ -36,14 +36,12 @@ from rich.progress import (
 )
 
 from podclean.config import get_config
+from podclean.formats import SUPPORTED_AUDIO_EXTENSIONS
 from podclean.models import EpisodeInfo
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-
-SUPPORTED_AUDIO_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".m4a", ".wav", ".ogg"})
-"""File extensions that PodClean knows how to process."""
 
 _AUDIO_MIME_PREFIXES: tuple[str, ...] = ("audio/",)
 

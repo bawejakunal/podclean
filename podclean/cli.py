@@ -440,7 +440,7 @@ def feed(
     if output is None:
         # Remove invalid filename characters and spaces
         safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
-        output = str(config.output_dir / f"{safe_title}_clean.mp3")
+        output = str(config.output_dir / f"{safe_title}_clean.{config.output_format}")
 
     try:
         result = _run_pipeline(audio_path, output, model, preview, config)

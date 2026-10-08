@@ -10,8 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-# Generated / cached media the CLI writes locally.
-_AUDIO_SUFFIXES = frozenset({".mp3", ".m4a", ".wav", ".ogg"})
+from podclean.formats import SUPPORTED_AUDIO_EXTENSIONS
 
 # Transcript JSON next to cached audio, temp cuts, and optional run logs.
 _SCRATCH_SUFFIXES = frozenset({".json", ".tmp", ".temp", ".partial", ".log"})
@@ -170,7 +169,7 @@ def _is_leftover_file(path: Path) -> bool:
     if suffix == ".json" and name.lower().startswith(_PRESERVE_JSON_PREFIXES):
         return False
 
-    if suffix in _AUDIO_SUFFIXES:
+    if suffix in SUPPORTED_AUDIO_EXTENSIONS:
         return True
     if suffix in _SCRATCH_SUFFIXES:
         return True
