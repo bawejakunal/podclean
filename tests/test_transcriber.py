@@ -451,6 +451,20 @@ class PackagingMarkersTest(TestCase):
         self.assertIn("audioop-lts>=0.2.1; python_version >= '3.13'", text)
         self.assertIn('mlx = ["mlx-whisper>=0.4.0"]', text)
         self.assertIn('cpu = ["faster-whisper>=1.1.0"]', text)
+        self.assertIn('podclean = "podclean.cli:cli"', text)
+        self.assertIn('requires-python = ">=3.11"', text)
+        self.assertIn('build-backend = "setuptools.build_meta"', text)
+
+    def test_package_ships_no_loose_data_files(self) -> None:
+        """Prompts and format tables are Python modules; a wheel needs no extra data."""
+
+        package = Path(__file__).resolve().parents[1] / "podclean"
+        extras = sorted(
+            path.name
+            for path in package.iterdir()
+            if path.is_file() and path.suffix != ".py"
+        )
+        self.assertEqual(extras, [])
 
     def test_default_model_is_known_to_installed_faster_whisper(self) -> None:
         """The default alias must exist in the pinned faster-whisper's registry.

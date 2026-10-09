@@ -38,9 +38,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["podclean*"]
 
+# Prompts and format tables live in Python modules (detector.py, formats.py).
+# No extra package-data files are required for a non-editable / tool install.
+
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "PLC0415"] # PLC0415 catches inline imports
