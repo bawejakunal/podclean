@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 from unittest import TestCase
 
-from podclean import cleanup, fetcher, rss
+from podclean import fetcher, rss
 from podclean.config import Config
 from podclean.formats import (
     AUDIO_MIME_TYPES,
@@ -29,7 +29,6 @@ class UnifiedAudioFormatsTest(TestCase):
 
     def test_modules_share_the_same_suffix_set(self) -> None:
         self.assertIs(fetcher.SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS)
-        self.assertIs(cleanup.SUPPORTED_AUDIO_EXTENSIONS, SUPPORTED_AUDIO_EXTENSIONS)
         self.assertIs(rss.AUDIO_MIME_TYPES, AUDIO_MIME_TYPES)
 
     def test_config_rejects_unlisted_output_format(self) -> None:

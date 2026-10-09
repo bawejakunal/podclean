@@ -96,20 +96,21 @@ podclean feed "https://rss.art19.com/the-daily-stoic" -n 3
 podclean file episode.mp3 --preview
 ```
 
-#### Reclaim local disk after upload (or instead of a run)
-Cleaned `*_clean.mp3` files, the episode download cache, and transcript/temp scratch stay on disk after a normal run. They are already on S3 when `--upload` succeeds. `--cleanup` is **opt-in** and local-only: it never deletes `.env`, `processed.json`, `feeds.json`, source, or anything in S3. With `file`, the input audio is kept even if it sits in the output or cache directory.
+#### Delete this run's local files after upload
+`--cleanup` deletes only the files that the same `file` / `feed` run created:
 
-After `file` / `feed`, the sweep runs even if the command fails. If any leftover or directory cannot be read or deleted, PodClean prints the count and exits with status 1 (unless the command already failed, in which case its own error is reported).
+- the downloaded episode audio (`feed`, unless it was already cached)
+- the transcript JSON (unless a cached transcript was reused)
+- the cleaned output audio, **only once it has been uploaded** with `--upload`; otherwise it is kept and PodClean says so
+
+Your input file, earlier runs' output, and anything on S3 are never touched.
 
 ```bash
-# Sweep leftovers and exit (no transcription / ad-removal)
-podclean --cleanup
-podclean cleanup
-
-# Run as usual, then delete local leftovers (typical after --upload)
 podclean feed "https://rss.art19.com/the-daily-stoic" --upload --cleanup
 podclean file episode.mp3 --upload --cleanup
 ```
+
+Cleanup also runs if the command fails partway. If a file cannot be deleted, PodClean prints the count and exits with status 1 (unless the command already failed, in which case its own error is reported).
 
 #### Use a different Whisper model
 ```bash
@@ -129,7 +130,7 @@ podclean file episode.mp3 --model mlx-community/whisper-large-v3-turbo
 | `--output` | Output file path | `./output/<name>_clean.mp3` |
 | `--preview` | Show detected ads without processing | off |
 | `--api-key` | Gemini API key (or set in .env) | — |
-| `--cleanup` | Delete leftover local output audio, download cache, and scratch files. Safe to pass alone (`podclean --cleanup`) or after `file` / `feed`. Keeps `.env`, `processed.json`, and `feeds.json`. | off |
+| `--cleanup` | Delete files this run created: the download, the transcript, and the cleaned output once uploaded | off |
 
 ## Configuration (`.env`)
 

@@ -6,7 +6,7 @@ import json
 import re
 import sys
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from podclean.cleanup import CleanupSummary, cleanup_local_artifacts
+from podclean.cleanup import CleanupSummary, RunArtifacts, remove_files
 from podclean.config import Config, get_config
 from podclean.detector import AdDetector
 from podclean.fetcher import PodcastFetcher
@@ -35,14 +35,9 @@ WHISPER_MODEL_HELP = (
     "Defaults follow the active backend; WHISPER_MODEL overrides."
 )
 
-CLEANUP_ONLY_HELP = (
-    "Delete leftover local output audio, download cache, and scratch files, "
-    "then exit (keeps .env, processed.json, feeds.json; never touches S3)"
-)
-
-CLEANUP_AFTER_HELP = (
-    "After this command, delete leftover local output audio, download cache, "
-    "and scratch files (keeps .env, processed.json, feeds.json; never touches S3)"
+CLEANUP_HELP = (
+    "Delete files this run created (download, transcript, and the cleaned "
+    "output once uploaded)"
 )
 
 
@@ -117,8 +112,12 @@ def _run_pipeline(
     model: str | None,
     preview: bool,
     config: Config,
+    artifacts: RunArtifacts | None = None,
 ) -> ProcessingResult | None:
-    """Run the full ad detection and removal pipeline."""
+    """Run the full ad detection and removal pipeline.
+
+    Files this run creates are recorded in *artifacts* when it is given.
+    """
     cache_path = audio_path.with_suffix(".json")
 
     try:
@@ -144,6 +143,8 @@ def _run_pipeline(
         else:
             transcriber = Transcriber(model_size=model)
             segments = transcriber.transcribe(audio_path)
+            if artifacts is not None:
+                artifacts.add_scratch(cache_path)
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump([s.to_dict() for s in segments], f)
 
@@ -202,6 +203,8 @@ def _run_pipeline(
             output_path = Path(output) if output else None
             t0 = time.time()
             result = processor.process(audio_path, ad_regions, output_path=output_path)
+            if artifacts is not None:
+                artifacts.output = Path(result.output_path)
             t_process = time.time() - t0
             console.print(f"  ✓ Audio processed in [cyan]{t_process:.1f}s[/]")
 
@@ -231,37 +234,19 @@ def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
             pass
 
 
-def _run_cleanup(
-    config: Config | None = None,
-    preserve: Iterable[Path] = (),
-) -> CleanupSummary:
-    """Sweep configured output/cache dirs and print a short summary."""
-    if config is None:
-        config = get_config()
-    summary = cleanup_local_artifacts(
-        output_dir=config.output_dir,
-        cache_dir=config.cache_dir,
-        preserve=preserve,
-    )
-    _print_cleanup_summary(summary, config)
+def _run_cleanup(artifacts: RunArtifacts) -> CleanupSummary:
+    """Delete the files this run created and print a short summary."""
+    summary = remove_files(artifacts.removable())
+    _print_cleanup_summary(summary, artifacts)
     return summary
 
 
-def _exit_if_cleanup_failed(summary: CleanupSummary) -> None:
-    if summary.errors:
-        sys.exit(1)
-
-
 @contextmanager
-def _cleanup_after(
-    enabled: bool,
-    config: Config,
-    preserve: Iterable[Path] = (),
-) -> Iterator[None]:
-    """Run the leftover sweep once the wrapped command finishes, even on failure.
+def _cleanup_after(enabled: bool, artifacts: RunArtifacts) -> Iterator[None]:
+    """Delete this run's files once the wrapped command finishes, even on failure.
 
-    A failed sweep exits nonzero only when the command itself succeeded, so it
-    never masks the command's own error or exit status.
+    A failed deletion exits nonzero only when the command itself succeeded, so
+    it never masks the command's own error or exit status.
     """
     if not enabled:
         yield
@@ -269,44 +254,36 @@ def _cleanup_after(
     try:
         yield
     except BaseException:
-        _run_cleanup(config, preserve)
+        _run_cleanup(artifacts)
         raise
-    _exit_if_cleanup_failed(_run_cleanup(config, preserve))
+    if _run_cleanup(artifacts).errors:
+        sys.exit(1)
 
 
-def _print_cleanup_summary(summary: CleanupSummary, config: Config) -> None:
+def _print_cleanup_summary(summary: CleanupSummary, artifacts: RunArtifacts) -> None:
     """Print counts and approximate bytes freed."""
     console.print()
-    console.print("[bold cyan]Local leftover cleanup[/]")
-    console.print(f"  Output: [dim]{config.output_dir}[/]")
-    console.print(f"  Cache:  [dim]{config.cache_dir}[/]")
+    console.print("[bold cyan]Cleanup[/]")
     if summary.files_removed:
         console.print(
-            f"  [green]✓[/] Removed [green]{summary.files_removed}[/] file(s), "
-            f"freed [cyan]{summary.format_bytes()}[/]"
+            f"  [green]✓[/] Removed [green]{summary.files_removed}[/] file(s) "
+            f"created by this run, freed [cyan]{summary.format_bytes()}[/]"
         )
     else:
         console.print("  Nothing to clean (0 files, 0 bytes).")
-    if summary.errors:
+    if artifacts.kept_output is not None:
         console.print(
-            f"  [red]✗[/] {summary.errors} file(s) or folder(s) could not be "
-            "read or deleted."
+            f"  Kept [dim]{artifacts.kept_output}[/]: it was not uploaded to S3."
         )
+    if summary.errors:
+        console.print(f"  [red]✗[/] Could not delete {summary.errors} file(s).")
 
 
-@click.group(invoke_without_command=True)
-@click.option("--cleanup", is_flag=True, help=CLEANUP_ONLY_HELP)
+@click.group()
 @click.version_option(version="0.1.0", prog_name="podclean")
-@click.pass_context
-def cli(ctx: click.Context, cleanup: bool) -> None:
+def cli() -> None:
     """🎧 PodClean — Automatically remove spoken ads from podcast episodes."""
-    if ctx.invoked_subcommand is not None:
-        return
-    if cleanup:
-        _print_banner()
-        _exit_if_cleanup_failed(_run_cleanup())
-        return
-    click.echo(ctx.get_help())
+    pass
 
 
 @cli.command()
@@ -327,7 +304,7 @@ def cli(ctx: click.Context, cleanup: bool) -> None:
 )
 @click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
 @click.option("--notify", is_flag=True, help="Send email notification with the download link")
-@click.option("--cleanup", is_flag=True, help=CLEANUP_AFTER_HELP)
+@click.option("--cleanup", is_flag=True, help=CLEANUP_HELP)
 def file(
     audio_file: Path,
     output: str | None,
@@ -352,17 +329,17 @@ def file(
         overrides["whisper_model"] = model
     config = get_config(**overrides)
 
-    # The input may live in output_dir/cache_dir; never sweep the user's source.
-    with _cleanup_after(cleanup, config, preserve=(audio_file,)):
-        # Validate config
-        errors = config.validate()
-        if errors:
-            for err in errors:
-                console.print(f"[red]✗ Config error:[/] {err}")
-            sys.exit(1)
+    # Validate config
+    errors = config.validate()
+    if errors:
+        for err in errors:
+            console.print(f"[red]✗ Config error:[/] {err}")
+        sys.exit(1)
 
-        console.print(f"Processing: [bold]{audio_file.name}[/]")
-        result = _run_pipeline(audio_file, output, model, preview, config)
+    console.print(f"Processing: [bold]{audio_file.name}[/]")
+    artifacts = RunArtifacts()
+    with _cleanup_after(cleanup, artifacts):
+        result = _run_pipeline(audio_file, output, model, preview, config, artifacts)
 
         if result and not preview:
             rss_url = None
@@ -373,6 +350,7 @@ def file(
                     episode_title=audio_file.stem,
                     duration_seconds=result.cleaned_duration,
                 )
+                artifacts.uploaded = bool(file_url)
                 if rss_url and file_url:
                     console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
                     console.print(f"[green]✓ Audio URL:[/] {file_url}")
@@ -416,7 +394,7 @@ def file(
 )
 @click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
 @click.option("--notify", is_flag=True, help="Send email notification with the download link")
-@click.option("--cleanup", is_flag=True, help=CLEANUP_AFTER_HELP)
+@click.option("--cleanup", is_flag=True, help=CLEANUP_HELP)
 def feed(
     rss_url: str,
     output: str | None,
@@ -442,34 +420,38 @@ def feed(
         overrides["whisper_model"] = model
     config = get_config(**overrides)
 
-    with _cleanup_after(cleanup, config):
-        # Validate config
-        errors = config.validate()
-        if errors:
-            for err in errors:
-                console.print(f"[red]✗ Config error:[/] {err}")
-            sys.exit(1)
+    # Validate config
+    errors = config.validate()
+    if errors:
+        for err in errors:
+            console.print(f"[red]✗ Config error:[/] {err}")
+        sys.exit(1)
 
-        # Fetch episode
-        fetcher = PodcastFetcher()
-        console.print(f"Fetching feed: [dim]{rss_url}[/]")
+    # Fetch episode
+    fetcher = PodcastFetcher()
+    console.print(f"Fetching feed: [dim]{rss_url}[/]")
 
-        episodes = fetcher.list_episodes(rss_url)
-        if not episodes:
-            console.print("[red]✗ No episodes found in feed.[/]")
-            sys.exit(1)
+    episodes = fetcher.list_episodes(rss_url)
+    if not episodes:
+        console.print("[red]✗ No episodes found in feed.[/]")
+        sys.exit(1)
 
-        if episode_num < 1 or episode_num > len(episodes):
-            console.print(
-                f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]"
-            )
-            sys.exit(1)
+    if episode_num < 1 or episode_num > len(episodes):
+        console.print(
+            f"[red]✗ Episode #{episode_num} not found. Feed has {len(episodes)} episodes.[/]"
+        )
+        sys.exit(1)
 
-        episode = episodes[episode_num - 1]
-        console.print(f"Episode: [bold]{episode.title}[/]")
-        console.print(f"Published: [dim]{episode.published}[/]")
+    episode = episodes[episode_num - 1]
+    console.print(f"Episode: [bold]{episode.title}[/]")
+    console.print(f"Published: [dim]{episode.published}[/]")
 
+    artifacts = RunArtifacts()
+    with _cleanup_after(cleanup, artifacts):
+        already_cached = fetcher.find_cached(episode) is not None
         audio_path = fetcher.download_episode(episode)
+        if not already_cached:
+            artifacts.add_scratch(audio_path)
         console.print(f"Downloaded to: [dim]{audio_path}[/]")
 
         if output is None:
@@ -477,7 +459,7 @@ def feed(
             safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
             output = str(config.output_dir / f"{safe_title}_clean.{config.output_format}")
 
-        result = _run_pipeline(audio_path, output, model, preview, config)
+        result = _run_pipeline(audio_path, output, model, preview, config, artifacts)
 
         if result and not preview:
             rss_url = None
@@ -488,6 +470,7 @@ def feed(
                     episode_title=episode.title,
                     duration_seconds=result.cleaned_duration,
                 )
+                artifacts.uploaded = bool(file_url)
                 if rss_url and file_url:
                     console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
                     console.print(f"[green]✓ Audio URL:[/] {file_url}")
@@ -544,18 +527,6 @@ def list_episodes(rss_url: str, limit: int) -> None:
         "[dim]Use[/] [cyan]podclean feed <url> -n <number>[/] "
         "[dim]to process a specific episode[/]"
     )
-
-
-@cli.command()
-def cleanup() -> None:
-    """Remove leftover local output audio, download cache, and scratch files.
-
-    Does not delete .env, processed.json, feeds.json, or anything on S3.
-
-    Example: podclean cleanup
-    """
-    _print_banner()
-    _exit_if_cleanup_failed(_run_cleanup())
 
 
 if __name__ == "__main__":
