@@ -27,40 +27,79 @@ Audio File → Transcribe (Whisper) → Detect Ads (Gemini AI) → Remove & Expo
 
 ### Installation
 
-`pip install -e .` pulls the Whisper stack that matches this machine. You do **not** need both backends.
+Install PodClean as a standalone command so `podclean` lands on your `PATH` (typically `~/.local/bin`). The package gets its own isolated environment; you do not need a project venv to run it.
+
+```bash
+# from a clone of this repo
+uv tool install .
+```
+
+For development against a checkout (the installed command tracks your local edits):
+
+```bash
+uv tool install -e .
+```
+
+Upgrade or remove that install later:
+
+```bash
+uv tool upgrade podclean
+uv tool uninstall podclean
+```
+
+`pipx` is the same idea if you prefer it:
+
+```bash
+pipx install .
+pipx upgrade podclean
+pipx uninstall podclean
+```
+
+If `podclean` is not found after install, `~/.local/bin` is probably not on `PATH`. Fix that with:
+
+```bash
+uv tool update-shell
+# then restart the shell, or: source ~/.bashrc / ~/.zshrc
+```
+
+The install pulls the Whisper stack that matches this machine. You do **not** need both backends.
 
 | Platform | Package installed automatically |
 |----------|----------------------------------|
 | macOS Apple Silicon (`darwin` + `arm64`) | `mlx-whisper` |
 | Linux, Intel Mac, and other non-MLX hosts | `faster-whisper` (>= 1.1, the first release that knows `large-v3-turbo`) |
 
-```bash
-cd ~/podclean
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
 To force a backend (in addition to, or instead of, the automatic extra):
 
 ```bash
 # faster-whisper on any platform (Linux/CPU default; also useful on a Mac)
-pip install -e ".[cpu]"
+uv tool install ".[cpu]"
 
 # mlx-whisper (Apple Silicon). Will not install usefully on Linux.
-pip install -e ".[mlx]"
+uv tool install ".[mlx]"
 ```
 
 If you force the non-default extra, set `WHISPER_BACKEND` to match (see below).
 
 ### Configuration
 
-Create a `.env` file in the project root:
+PodClean reads process environment variables first, then layers `.env` files. The first file that defines a key wins; later files only fill keys that are still unset. Search order, highest priority first:
+
+1. `PODCLEAN_ENV` — explicit path to a file, if set
+2. `.env` in the current working directory
+3. `$XDG_CONFIG_HOME/podclean/.env` (defaults to `~/.config/podclean/.env`)
+4. `~/.podclean/.env`
+5. A checkout-root `.env` when running from an editable/source install
+
+A tool install does **not** keep reading `.env` from the git clone unless you run the command from that directory or copy the file to one of the paths above. After `uv tool install` / `pipx install`, put your API key in the user config file:
 
 ```bash
-cp .env.example .env
-# Edit .env and add your Gemini API key
+mkdir -p ~/.config/podclean
+cp .env.example ~/.config/podclean/.env
+# Edit ~/.config/podclean/.env and add your Gemini API key
 ```
+
+A project-local `.env` in the directory you run `podclean` from still works and overrides matching keys in the user config file.
 
 Leave `WHISPER_MODEL` unset unless you want to override the backend default. Model IDs are **not** interchangeable:
 
@@ -134,6 +173,8 @@ podclean file episode.mp3 --model mlx-community/whisper-large-v3-turbo
 
 ## Configuration (`.env`)
 
+See [Configuration](#configuration) above for where these files are read from (`~/.config/podclean/.env` after a tool install, or `.env` in the working directory).
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GEMINI_API_KEY` | Google Gemini API key | *(required)* |
@@ -161,12 +202,34 @@ Typical processing times for a 1-hour episode:
 
 CUDA is optional. Linux works on CPU with the default `WHISPER_DEVICE=cpu` / `WHISPER_COMPUTE_TYPE=int8`.
 
+## Development
+
+For contributors who want a project virtualenv instead of `uv tool install -e .`:
+
+```bash
+cd ~/podclean
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+Force a backend extra the same way: `pip install -e ".[cpu]"` or `pip install -e ".[mlx]"`. If you force the non-default extra, set `WHISPER_BACKEND` to match.
+
+A local `.env` in the checkout root is picked up automatically (see Configuration above). Copy `.env.example` to `.env` and add your Gemini API key.
+
+Run the test suite from the checkout:
+
+```bash
+python -m unittest discover -s tests
+```
+
 ## Project Structure
 
 ```
 podclean/
 ├── pyproject.toml          # Project config & dependencies
-├── .env                    # Your API key (not committed)
+├── .env.example            # Template for ~/.config/podclean/.env or ./.env
+├── .env                    # Local API key (not committed; optional)
 ├── podclean/
 │   ├── cli.py              # CLI entry point
 │   ├── config.py           # Configuration management

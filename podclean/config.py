@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,17 +19,103 @@ from podclean.whisper_backend import (
     resolve_whisper_backend,
 )
 
-# Load .env file from project root or current directory
-_env_paths = [
-    Path.cwd() / ".env",
-    Path(__file__).parent.parent / ".env",
-    Path.home() / ".config" / "podclean" / ".env",
-    Path.home() / ".podclean" / ".env",
-]
-for p in _env_paths:
-    if p.exists():
-        load_dotenv(p)
-        break
+# Explicit file path, e.g. PODCLEAN_ENV=/path/to/.env
+PODCLEAN_ENV_VAR = "PODCLEAN_ENV"
+
+
+def _package_root() -> Path:
+    """Directory that contains the ``podclean`` package (repo root or site-packages)."""
+
+    return Path(__file__).resolve().parent.parent
+
+
+def is_source_checkout(root: Path) -> bool:
+    """Return True when *root* looks like this project's source tree.
+
+    Used so a wheel/tool install does not treat ``site-packages/.env`` as
+    configuration, while an editable checkout still finds the repo ``.env``.
+    """
+
+    pyproject = root / "pyproject.toml"
+    if not pyproject.is_file() or not (root / "podclean" / "__init__.py").is_file():
+        return False
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return 'name = "podclean"' in text
+
+
+def dotenv_search_paths(
+    *,
+    cwd: Path | None = None,
+    home: Path | None = None,
+    package_root: Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> list[Path]:
+    """Return candidate ``.env`` paths, highest priority first.
+
+    1. ``PODCLEAN_ENV`` (explicit file)
+    2. ``.env`` in the current working directory
+    3. ``$XDG_CONFIG_HOME/podclean/.env`` (default ``~/.config/podclean/.env``)
+    4. ``~/.podclean/.env``
+    5. Checkout-root ``.env`` when running from an editable/source install
+    """
+
+    env = os.environ if environ is None else environ
+    cwd = Path.cwd() if cwd is None else cwd
+    home = Path.home() if home is None else home
+    package_root = _package_root() if package_root is None else package_root
+
+    candidates: list[Path] = []
+
+    explicit = (env.get(PODCLEAN_ENV_VAR) or "").strip()
+    if explicit:
+        candidates.append(Path(explicit).expanduser())
+
+    candidates.append(cwd / ".env")
+
+    xdg = (env.get("XDG_CONFIG_HOME") or "").strip()
+    config_home = Path(xdg).expanduser() if xdg else home / ".config"
+    candidates.append(config_home / "podclean" / ".env")
+    candidates.append(home / ".podclean" / ".env")
+
+    if is_source_checkout(package_root):
+        candidates.append(package_root / ".env")
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            key = path.expanduser().resolve()
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def load_dotenv_files(paths: list[Path] | None = None) -> list[Path]:
+    """Load existing ``.env`` files, highest priority first.
+
+    ``load_dotenv`` does not override variables already in the environment, so
+    the first file that defines a key wins and later files fill gaps. Process
+    environment variables always take precedence over every file.
+    """
+
+    if paths is None:
+        paths = dotenv_search_paths()
+    loaded: list[Path] = []
+    for path in paths:
+        if path.is_file():
+            load_dotenv(path, override=False)
+            loaded.append(path)
+    return loaded
+
+
+load_dotenv_files()
 
 
 @dataclass
@@ -112,7 +199,8 @@ class Config:
             errors.append(
                 "GEMINI_API_KEY is not set. "
                 "Get a free key at https://aistudio.google.com/apikey "
-                "and set it in .env or as an environment variable."
+                "and set it in ~/.config/podclean/.env, a local .env, "
+                "or as an environment variable."
             )
 
         if self.output_format not in OUTPUT_FORMATS:
