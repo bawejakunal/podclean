@@ -6,6 +6,8 @@ import json
 import re
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -14,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from podclean.cleanup import CleanupSummary, RunArtifacts, remove_files
 from podclean.config import Config, get_config
 from podclean.detector import AdDetector
 from podclean.fetcher import PodcastFetcher
@@ -30,6 +33,11 @@ WHISPER_MODEL_HELP = (
     "(e.g. mlx-community/whisper-large-v3-turbo); "
     "faster-whisper uses a size/name (e.g. large-v3-turbo). "
     "Defaults follow the active backend; WHISPER_MODEL overrides."
+)
+
+CLEANUP_HELP = (
+    "Delete files this run created (download, transcript, and the cleaned "
+    "output once uploaded)"
 )
 
 
@@ -104,8 +112,12 @@ def _run_pipeline(
     model: str | None,
     preview: bool,
     config: Config,
+    artifacts: RunArtifacts | None = None,
 ) -> ProcessingResult | None:
-    """Run the full ad detection and removal pipeline."""
+    """Run the full ad detection and removal pipeline.
+
+    Files this run creates are recorded in *artifacts* when it is given.
+    """
     cache_path = audio_path.with_suffix(".json")
 
     try:
@@ -131,6 +143,8 @@ def _run_pipeline(
         else:
             transcriber = Transcriber(model_size=model)
             segments = transcriber.transcribe(audio_path)
+            if artifacts is not None:
+                artifacts.add_scratch(cache_path)
             with open(cache_path, "w", encoding="utf-8") as f:
                 json.dump([s.to_dict() for s in segments], f)
 
@@ -189,6 +203,8 @@ def _run_pipeline(
             output_path = Path(output) if output else None
             t0 = time.time()
             result = processor.process(audio_path, ad_regions, output_path=output_path)
+            if artifacts is not None:
+                artifacts.output = Path(result.output_path)
             t_process = time.time() - t0
             console.print(f"  ✓ Audio processed in [cyan]{t_process:.1f}s[/]")
 
@@ -218,6 +234,51 @@ def _cleanup_cache(audio_path: Path, cache_path: Path, cache_dir: Path) -> None:
             pass
 
 
+def _run_cleanup(artifacts: RunArtifacts) -> CleanupSummary:
+    """Delete the files this run created and print a short summary."""
+    summary = remove_files(artifacts.removable())
+    _print_cleanup_summary(summary, artifacts)
+    return summary
+
+
+@contextmanager
+def _cleanup_after(enabled: bool, artifacts: RunArtifacts) -> Iterator[None]:
+    """Delete this run's files once the wrapped command finishes, even on failure.
+
+    A failed deletion exits nonzero only when the command itself succeeded, so
+    it never masks the command's own error or exit status.
+    """
+    if not enabled:
+        yield
+        return
+    try:
+        yield
+    except BaseException:
+        _run_cleanup(artifacts)
+        raise
+    if _run_cleanup(artifacts).errors:
+        sys.exit(1)
+
+
+def _print_cleanup_summary(summary: CleanupSummary, artifacts: RunArtifacts) -> None:
+    """Print counts and approximate bytes freed."""
+    console.print()
+    console.print("[bold cyan]Cleanup[/]")
+    if summary.files_removed:
+        console.print(
+            f"  [green]✓[/] Removed [green]{summary.files_removed}[/] file(s) "
+            f"created by this run, freed [cyan]{summary.format_bytes()}[/]"
+        )
+    else:
+        console.print("  Nothing to clean (0 files, 0 bytes).")
+    if artifacts.kept_output is not None:
+        console.print(
+            f"  Kept [dim]{artifacts.kept_output}[/]: it was not uploaded to S3."
+        )
+    if summary.errors:
+        console.print(f"  [red]✗[/] Could not delete {summary.errors} file(s).")
+
+
 @click.group()
 @click.version_option(version="0.1.0", prog_name="podclean")
 def cli() -> None:
@@ -243,6 +304,7 @@ def cli() -> None:
 )
 @click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
 @click.option("--notify", is_flag=True, help="Send email notification with the download link")
+@click.option("--cleanup", is_flag=True, help=CLEANUP_HELP)
 def file(
     audio_file: Path,
     output: str | None,
@@ -251,6 +313,7 @@ def file(
     api_key: str | None,
     upload: bool,
     notify: bool,
+    cleanup: bool,
 ) -> None:
     """Process a local audio file to remove ads.
 
@@ -274,33 +337,36 @@ def file(
         sys.exit(1)
 
     console.print(f"Processing: [bold]{audio_file.name}[/]")
-    result = _run_pipeline(audio_file, output, model, preview, config)
-    
-    if result and not preview:
-        rss_url = None
-        file_url = None
-        if upload or notify:
-            rss_url, file_url = upload_to_s3(
-                Path(result.output_path),
-                episode_title=audio_file.stem,
-                duration_seconds=result.cleaned_duration,
-            )
-            if rss_url and file_url:
-                console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
-                console.print(f"[green]✓ Audio URL:[/] {file_url}")
-            
-        if notify:
-            if rss_url and file_url:
-                success = send_notification(
-                    subject="PodClean: Your audio is ready!",
-                    body=f"Your cleaned podcast episode is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+    artifacts = RunArtifacts()
+    with _cleanup_after(cleanup, artifacts):
+        result = _run_pipeline(audio_file, output, model, preview, config, artifacts)
+
+        if result and not preview:
+            rss_url = None
+            file_url = None
+            if upload or notify:
+                rss_url, file_url = upload_to_s3(
+                    Path(result.output_path),
+                    episode_title=audio_file.stem,
+                    duration_seconds=result.cleaned_duration,
                 )
-                if success:
-                    console.print("[green]✓ Notification sent successfully![/]")
+                artifacts.uploaded = bool(file_url)
+                if rss_url and file_url:
+                    console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
+                    console.print(f"[green]✓ Audio URL:[/] {file_url}")
+
+            if notify:
+                if rss_url and file_url:
+                    success = send_notification(
+                        subject="PodClean: Your audio is ready!",
+                        body=f"Your cleaned podcast episode is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+                    )
+                    if success:
+                        console.print("[green]✓ Notification sent successfully![/]")
+                    else:
+                        console.print("[red]✗ Failed to send notification.[/]")
                 else:
-                    console.print("[red]✗ Failed to send notification.[/]")
-            else:
-                console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
+                    console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
 
 
 @cli.command()
@@ -328,6 +394,7 @@ def file(
 )
 @click.option("--upload", is_flag=True, help="Upload cleaned audio to AWS S3")
 @click.option("--notify", is_flag=True, help="Send email notification with the download link")
+@click.option("--cleanup", is_flag=True, help=CLEANUP_HELP)
 def feed(
     rss_url: str,
     output: str | None,
@@ -337,6 +404,7 @@ def feed(
     api_key: str | None,
     upload: bool,
     notify: bool,
+    cleanup: bool,
 ) -> None:
     """Process a podcast episode from an RSS feed.
 
@@ -378,41 +446,47 @@ def feed(
     console.print(f"Episode: [bold]{episode.title}[/]")
     console.print(f"Published: [dim]{episode.published}[/]")
 
-    audio_path = fetcher.download_episode(episode)
-    console.print(f"Downloaded to: [dim]{audio_path}[/]")
+    artifacts = RunArtifacts()
+    with _cleanup_after(cleanup, artifacts):
+        already_cached = fetcher.find_cached(episode) is not None
+        audio_path = fetcher.download_episode(episode)
+        if not already_cached:
+            artifacts.add_scratch(audio_path)
+        console.print(f"Downloaded to: [dim]{audio_path}[/]")
 
-    if output is None:
-        # Remove invalid filename characters and spaces
-        safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
-        output = str(config.output_dir / f"{safe_title}_clean.mp3")
+        if output is None:
+            # Remove invalid filename characters and spaces
+            safe_title = re.sub(r"[^\w\s-]", "", episode.title).strip().replace(" ", "_")
+            output = str(config.output_dir / f"{safe_title}_clean.{config.output_format}")
 
-    result = _run_pipeline(audio_path, output, model, preview, config)
-    
-    if result and not preview:
-        rss_url = None
-        file_url = None
-        if upload or notify:
-            rss_url, file_url = upload_to_s3(
-                Path(result.output_path),
-                episode_title=episode.title,
-                duration_seconds=result.cleaned_duration,
-            )
-            if rss_url and file_url:
-                console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
-                console.print(f"[green]✓ Audio URL:[/] {file_url}")
-            
-        if notify:
-            if rss_url and file_url:
-                success = send_notification(
-                    subject=f"PodClean: {episode.title} is ready!",
-                    body=f"Your cleaned podcast episode '{episode.title}' is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+        result = _run_pipeline(audio_path, output, model, preview, config, artifacts)
+
+        if result and not preview:
+            rss_url = None
+            file_url = None
+            if upload or notify:
+                rss_url, file_url = upload_to_s3(
+                    Path(result.output_path),
+                    episode_title=episode.title,
+                    duration_seconds=result.cleaned_duration,
                 )
-                if success:
-                    console.print("[green]✓ Notification sent successfully![/]")
+                artifacts.uploaded = bool(file_url)
+                if rss_url and file_url:
+                    console.print(f"[green]✓ RSS Feed:[/] {rss_url}")
+                    console.print(f"[green]✓ Audio URL:[/] {file_url}")
+
+            if notify:
+                if rss_url and file_url:
+                    success = send_notification(
+                        subject=f"PodClean: {episode.title} is ready!",
+                        body=f"Your cleaned podcast episode '{episode.title}' is ready.\n\nRSS Feed URL (for YouTube Music): {rss_url}\nDirect Audio File: {file_url}"
+                    )
+                    if success:
+                        console.print("[green]✓ Notification sent successfully![/]")
+                    else:
+                        console.print("[red]✗ Failed to send notification.[/]")
                 else:
-                    console.print("[red]✗ Failed to send notification.[/]")
-            else:
-                console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
+                    console.print("[yellow]⚠ Cannot send notification because the upload failed or was not requested.[/]")
 
 
 

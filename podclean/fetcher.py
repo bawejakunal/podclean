@@ -36,14 +36,12 @@ from rich.progress import (
 )
 
 from podclean.config import get_config
+from podclean.formats import SUPPORTED_AUDIO_EXTENSIONS
 from podclean.models import EpisodeInfo
 
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-
-SUPPORTED_AUDIO_EXTENSIONS: frozenset[str] = frozenset({".mp3", ".m4a", ".wav", ".ogg"})
-"""File extensions that PodClean knows how to process."""
 
 _AUDIO_MIME_PREFIXES: tuple[str, ...] = ("audio/",)
 
@@ -254,14 +252,15 @@ class PodcastFetcher:
         dest_dir = output_dir or self._config.cache_dir
         dest_dir.mkdir(parents=True, exist_ok=True)
 
+        cached = self.find_cached(episode, dest_dir)
+        if cached is not None:
+            logger.info("Cache hit: %s → %s", episode.title, cached)
+            return cached
+
         # Determine filename from URL hash + extension
         ext = _extension_for_url(episode.audio_url)
         filename = f"{_url_hash(episode.audio_url)}{ext}"
         dest = dest_dir / filename
-
-        if dest.exists():
-            logger.info("Cache hit: %s → %s", episode.title, dest)
-            return dest
 
         logger.info("Downloading: %s", episode.title)
         try:
@@ -282,11 +281,6 @@ class PodcastFetcher:
             if ct_ext != ext:
                 filename = f"{_url_hash(episode.audio_url)}{ct_ext}"
                 dest = dest_dir / filename
-                if dest.exists():
-                    logger.info(
-                        "Cache hit (content-type): %s → %s", episode.title, dest
-                    )
-                    return dest
 
         total_size = int(response.headers.get("Content-Length", 0))
 
@@ -311,6 +305,28 @@ class PodcastFetcher:
 
         logger.info("Saved: %s (%d bytes)", dest, dest.stat().st_size)
         return dest
+
+    def find_cached(
+        self,
+        episode: EpisodeInfo,
+        output_dir: Path | None = None,
+    ) -> Path | None:
+        """Return the already-downloaded audio for *episode*, or ``None``.
+
+        The cached name is ``<url-hash><ext>``, where the extension may come
+        from the URL or the server's ``Content-Type``, so every supported
+        extension is checked (the URL's own extension first).
+        """
+        if not episode.audio_url:
+            return None
+        dest_dir = output_dir or self._config.cache_dir
+        stem = _url_hash(episode.audio_url)
+        url_ext = _extension_for_url(episode.audio_url)
+        for ext in (url_ext, *sorted(SUPPORTED_AUDIO_EXTENSIONS - {url_ext})):
+            candidate = dest_dir / f"{stem}{ext}"
+            if candidate.exists():
+                return candidate
+        return None
 
     def get_audio_path(self, source: str) -> Path:
         """Resolve *source* to a local audio file path.

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from podclean.formats import OUTPUT_FORMATS
 from podclean.whisper_backend import (
     BackendName,
     WhisperSettings,
@@ -114,10 +115,10 @@ class Config:
                 "and set it in .env or as an environment variable."
             )
 
-        if self.output_format not in ("mp3", "wav", "m4a"):
+        if self.output_format not in OUTPUT_FORMATS:
             errors.append(
                 f"Invalid output format: {self.output_format!r}. "
-                f"Choose from: mp3, wav, m4a"
+                f"Choose from: {', '.join(OUTPUT_FORMATS)}"
             )
 
         raw_backend = getattr(self, "_whisper_backend_override", "") or ""
