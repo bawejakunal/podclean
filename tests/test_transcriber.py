@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import os
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import TestCase
@@ -22,8 +24,12 @@ from podclean.whisper_backend import (
 )
 
 try:
+    import av
+    from faster_whisper.audio import decode_audio
     from faster_whisper.utils import available_models
 except ImportError:  # faster-whisper is absent on Apple Silicon installs
+    av = None
+    decode_audio = None
     available_models = None
 
 _WHISPER_ENV = (
@@ -448,9 +454,47 @@ class PackagingMarkersTest(TestCase):
         text = Path(__file__).resolve().parents[1].joinpath("pyproject.toml").read_text()
         self.assertIn("mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'", text)
         self.assertIn("faster-whisper>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'", text)
+        self.assertIn("av>=11,<19; sys_platform != 'darwin' or platform_machine != 'arm64'", text)
         self.assertIn("audioop-lts>=0.2.1; python_version >= '3.13'", text)
         self.assertIn('mlx = ["mlx-whisper>=0.4.0"]', text)
-        self.assertIn('cpu = ["faster-whisper>=1.1.0"]', text)
+        self.assertIn('cpu = ["faster-whisper>=1.1.0", "av>=11,<19"]', text)
+        self.assertIn('podclean = "podclean.cli:cli"', text)
+        self.assertIn('requires-python = ">=3.11"', text)
+        self.assertIn('build-backend = "setuptools.build_meta"', text)
+
+    def test_package_ships_no_loose_data_files(self) -> None:
+        """Prompts and format tables are Python modules; a wheel needs no extra data."""
+
+        package = Path(__file__).resolve().parents[1] / "podclean"
+        extras = sorted(
+            path.name
+            for path in package.iterdir()
+            if path.is_file() and path.suffix != ".py"
+        )
+        self.assertEqual(extras, [])
+
+    def test_faster_whisper_av_is_below_pyav_19(self) -> None:
+        """faster-whisper 1.2.1 passes metadata_errors; PyAV 19 removed that kwarg."""
+
+        if av is None or decode_audio is None:
+            self.skipTest("faster-whisper is not installed")
+
+        major = int(av.__version__.split(".", 1)[0])
+        self.assertLess(
+            major,
+            19,
+            f"av {av.__version__} is incompatible with faster-whisper 1.2.1",
+        )
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(b"\x00\x00" * 1600)
+        buf.seek(0)
+        audio = decode_audio(buf)
+        self.assertGreater(len(audio), 0)
 
     def test_default_model_is_known_to_installed_faster_whisper(self) -> None:
         """The default alias must exist in the pinned faster-whisper's registry.

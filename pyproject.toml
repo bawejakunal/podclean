@@ -10,6 +10,10 @@ dependencies = [
     "mlx-whisper>=0.4.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
     # 1.1.0 is the first release whose model registry knows large-v3-turbo.
     "faster-whisper>=1.1.0; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    # PyAV 19 removed av.open(..., metadata_errors=...); faster-whisper 1.2.1
+    # (latest on PyPI) still passes it, so transcription TypeErrors. The same
+    # marker as faster-whisper; drop the cap when a compatible release ships.
+    "av>=11,<19; sys_platform != 'darwin' or platform_machine != 'arm64'",
     "pydub>=0.25.1",
     "feedparser>=6.0",
     "requests>=2.31",
@@ -26,7 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 mlx = ["mlx-whisper>=0.4.0"]
-cpu = ["faster-whisper>=1.1.0"]
+cpu = ["faster-whisper>=1.1.0", "av>=11,<19"]
 
 [project.scripts]
 podclean = "podclean.cli:cli"
@@ -38,9 +42,12 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 include = ["podclean*"]
 
+# Prompts and format tables live in Python modules (detector.py, formats.py).
+# No extra package-data files are required for a non-editable / tool install.
+
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "PLC0415"] # PLC0415 catches inline imports
