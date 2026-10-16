@@ -67,7 +67,9 @@ The install pulls the Whisper stack that matches this machine. You do **not** ne
 | Platform | Package installed automatically |
 |----------|----------------------------------|
 | macOS Apple Silicon (`darwin` + `arm64`) | `mlx-whisper` |
-| Linux, Intel Mac, and other non-MLX hosts | `faster-whisper` (>= 1.1, the first release that knows `large-v3-turbo`) |
+| Linux, Intel Mac, and other non-MLX hosts | `faster-whisper` (>= 1.1, the first release that knows `large-v3-turbo`) and `av>=11,<19` |
+
+On the faster-whisper path, PyAV is capped below 19 because 1.2.1 still passes `metadata_errors` to `av.open()`, which PyAV 19 removed. Pinning `av` 18.x restores transcription. Drop the cap when a faster-whisper release includes the upstream fix.
 
 To force a backend (in addition to, or instead of, the automatic extra):
 
